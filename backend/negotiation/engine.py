@@ -163,14 +163,19 @@ class DefaultNegotiationEngine:
 
         return self.finish(self.prepare(task, candidate_robots, observed_at_s))
 
-    async def decide(
+    def decide_sync(
         self,
         task: Task,
         candidate_robots: Sequence[object],
         observed_at_s: float,
         event_context: DecisionEventContext,
     ) -> NegotiationDecision:
-        """Run a negotiation and return its outcome and canonical events."""
+        """Synchronous decision core.
+
+        The negotiation itself is CPU-only and deterministic, so the in-process
+        composition root drives it directly. :meth:`decide` is the async form of
+        this method and delegates to it, keeping a single implementation.
+        """
 
         negotiation_round = self.prepare(task, candidate_robots, observed_at_s)
         outcome = self.finish(negotiation_round)
@@ -184,3 +189,16 @@ class DefaultNegotiationEngine:
                 )
             )
         return NegotiationDecision(outcome=outcome, events=tuple(events))
+
+    async def decide(
+        self,
+        task: Task,
+        candidate_robots: Sequence[object],
+        observed_at_s: float,
+        event_context: DecisionEventContext,
+    ) -> NegotiationDecision:
+        """Run a negotiation and return its outcome and canonical events."""
+
+        return self.decide_sync(
+            task, candidate_robots, observed_at_s, event_context
+        )

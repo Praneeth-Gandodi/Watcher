@@ -194,9 +194,18 @@ class InMemoryEventStream:
         self.publish_nowait(event)
 
     def publish_nowait(self, event: EventEnvelope[EventPayload]) -> None:
+        """Append an externally produced event, e.g. an Agent 1 decision event.
+
+        The stream is the single sequence authority for the whole system, so
+        publishing an event also advances the counter the runtime allocates
+        from. That keeps Agent 1 and Agent 2 events on one monotonic numbering.
+        """
+
         if event.sequence <= self._last_retained_sequence():
             raise ValueError("events must be published in increasing sequence order")
         self._events.append(event)
+        if event.sequence > self._sequence:
+            self._sequence = event.sequence
         overflow = len(self._events) - self._max_events
         if overflow > 0:
             del self._events[:overflow]
@@ -818,8 +827,24 @@ class SimulationRuntime:
             self._clock.now_s,
         )
         trajectory = self._trajectory_for(state, route)
+        # Bind the task to the robot immediately, not on the first movement:
+        # Agent 1's eligibility rules exclude a robot that already holds a
+        # current task, so leaving this unset would let the same robot win a
+        # second task before it has moved.
+        bound_robot = (
+            evolve_robot(
+                state.robot,
+                status=RobotStatus.ACTIVE if trajectory else state.robot.status,
+                current_task_id=task_id if trajectory else None,
+                workload=1 if trajectory else 0,
+                last_updated_at_s=self._clock.now_s,
+            )
+            if trajectory
+            else state.robot
+        )
         self._robots[robot_id] = replace(
             state,
+            robot=bound_robot,
             route=route,
             trajectory=trajectory,
             task_id=task_id if trajectory else None,
@@ -876,6 +901,13 @@ class SimulationRuntime:
         if state.task_id == task_id:
             self._robots[robot_id] = replace(
                 state,
+                robot=evolve_robot(
+                    state.robot,
+                    status=RobotStatus.IDLE,
+                    current_task_id=None,
+                    workload=0,
+                    last_updated_at_s=self._clock.now_s,
+                ),
                 route=None,
                 trajectory=(),
                 task_id=None,
@@ -1689,23 +1721,30 @@ class SimulationRuntime:
         *,
         correlation_id: str,
     ) -> tuple[EventEnvelope[EventPayload], ...]:
+        """Create, publish, and return one canonical event.
+
+        Event IDs are derived from the type, correlation, timestamp, and
+        sequence rather than randomly, so a deterministic run produces
+        reproducible envelopes.
+        """
+
         sequence = self._stream.next_sequence()
-        return (
-            EventEnvelope(
-                event_id=_derived_uuid(
-                    payload.event_type.value,
-                    correlation_id,
-                    f"{occurred_at_s:.6f}",
-                    str(sequence),
-                ),
-                sequence=sequence,
-                producer=EVENT_PRODUCER,
-                correlation_id=correlation_id[:128],
-                occurred_at_s=occurred_at_s,
-                event_type=payload.event_type,
-                payload=payload,
+        event = EventEnvelope(
+            event_id=_derived_uuid(
+                payload.event_type.value,
+                correlation_id,
+                f"{occurred_at_s:.6f}",
+                str(sequence),
             ),
+            sequence=sequence,
+            producer=EVENT_PRODUCER,
+            correlation_id=correlation_id[:128],
+            occurred_at_s=occurred_at_s,
+            event_type=payload.event_type,
+            payload=payload,
         )
+        self._stream.publish_nowait(event)
+        return (event,)
 
 
 def fleets_conflict_free(runtime: SimulationRuntime) -> bool:

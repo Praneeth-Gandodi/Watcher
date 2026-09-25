@@ -67,6 +67,30 @@ class ReassignmentService:
     ) -> ReassignmentDecision:
         """Reassign an assigned task when a valid replacement bid exists."""
 
+        return self.reassign_sync(
+            task=task,
+            robots=robots,
+            observed_at_s=observed_at_s,
+            trigger=trigger,
+            event_context=event_context,
+        )
+
+    def reassign_sync(
+        self,
+        *,
+        task: Task,
+        robots: Sequence[Robot],
+        observed_at_s: float,
+        trigger: EventEnvelope[object],
+        event_context: DecisionEventContext,
+    ) -> ReassignmentDecision:
+        """Synchronous reassignment core.
+
+        Reassignment is deterministic and CPU-only, so the in-process
+        composition root drives it directly. :meth:`reassign` is the async form
+        of this method and delegates to it, keeping a single implementation.
+        """
+
         if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
             raise ValueError("a terminal task cannot be reassigned")
         if task.assigned_robot_id is None:
