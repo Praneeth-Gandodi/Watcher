@@ -147,13 +147,42 @@ class BatteryManager:
         index: WorldIndex,
         *,
         reserved: frozenset[Cell] = frozenset(),
+        candidates: tuple[Cell, ...] | None = None,
     ) -> Cell | None:
-        """Choose the nearest charging cell that another robot is not using."""
+        """Choose the nearest charging cell that another robot is not using.
 
-        nearest = index.nearest_cell_of_type(position, GridCellType.CHARGING, unavailable=reserved)
-        if nearest is None:
-            nearest = index.nearest_cell_of_type(position, GridCellType.CHARGING)
-        return nearest
+        A warehouse has tens of pads, not thousands of cells, so when the caller
+        knows them a direct comparison is used. The ring search in
+        ``nearest_cell_of_type`` is a fallback for callers that do not: it walks
+        outward ring by ring, which is fine once and far too slow to do for every
+        robot in a fleet that is all charging at the same time.
+        """
+
+        pads = candidates if candidates is not None else index.stations(GridCellType.CHARGING)
+        if not pads:
+            return None
+
+        best: Cell | None = None
+        best_distance = 0.0
+        for cell in pads:
+            if cell in reserved:
+                continue
+            center_x, center_y = index.center_of(cell)
+            distance = (center_x - position.x) ** 2 + (center_y - position.y) ** 2
+            if best is None or distance < best_distance:
+                best, best_distance = cell, distance
+        if best is not None:
+            return best
+
+        # Every pad is claimed, so fall back to the closest one available: a
+        # robot still needs somewhere to go, and a shared pad is better than a
+        # stranded robot.
+        for cell in pads:
+            center_x, center_y = index.center_of(cell)
+            distance = (center_x - position.x) ** 2 + (center_y - position.y) ** 2
+            if best is None or distance < best_distance:
+                best, best_distance = cell, distance
+        return best
 
     def is_satisfied(self, battery_percent: float) -> bool:
         return battery_percent >= self.charge_target_percent

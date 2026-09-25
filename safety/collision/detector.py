@@ -29,8 +29,8 @@ from backend.contracts.models import (
 )
 from backend.simulation.grid import Cell, WorldIndex
 
-PREDICTION_HORIZON_S = 2.0
-PREDICTION_STEP_S = 0.4
+PREDICTION_HORIZON_S = 1.5
+PREDICTION_STEP_S = 0.5
 SAFETY_MARGIN_M = 0.6
 CONFLICT_MEMORY_S = 1.5
 

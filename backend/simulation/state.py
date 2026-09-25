@@ -39,6 +39,11 @@ class RobotState:
     blocked_since_s: float | None = None
     yield_count: int = 0
     charge_target_cell: tuple[int, int] | None = None
+    # Seconds of work still owed at the destination. A task is travel *plus*
+    # service: a robot that has arrived is loading, unloading, or inspecting,
+    # and only then is the task done.
+    service_remaining_s: float = 0.0
+    service_total_s: float = 0.0
 
     def to_contract(self) -> Robot:
         """Project this state into the canonical immutable contract."""

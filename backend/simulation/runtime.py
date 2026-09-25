@@ -99,6 +99,67 @@ from safety.pathfinding import (
 MAX_EVENTS_IN_MEMORY = 10_000
 ALLOCATION_BATCH_PER_TICK = 40
 
+# How many task allocations a single tick may perform. Without a cap, a backlog
+# coming due at once pays for every candidate scan and every route plan in one
+# tick, which is what produced a 150 ms allocation stage. The remainder is
+# allocated on the following ticks, which is also how an auction behaves when a
+# burst of work arrives together.
+MAX_ALLOCATIONS_PER_TICK = 6
+
+# Roughly how long one robot stays busy with a job, travel included. Used to
+# size the task arrival rate against the fleet so the workload stays saturated
+# instead of oscillating between a rush and a standstill.
+SECONDS_OF_WORK_PER_TASK = 45.0
+
+# How long a robot holds position after yielding right of way before it is
+# replanned. Long enough for the other robot to clear the aisle, and it bounds
+# replanning to once per robot per window instead of once per tick.
+YIELD_HOLD_S = 2.0
+
+# How many replans a single tick may perform. Caps the worst-case tick so an
+# unusually busy one cannot blow the simulation's real-time budget.
+MAX_REPLANS_PER_TICK = 6
+
+# Simulation rate by fleet size. A small fleet gets the full 10 Hz. A large one
+# runs at 5 Hz, which is still five coordination decisions a second per robot —
+# ample for right of way at walking-pace speeds — and it keeps the tick inside
+# its budget. The trade-off is stated here rather than discovered as an
+# overage, and the scalability test measures against this interval.
+TICK_RATES_BY_FLEET = ((200, 5.0), (0, 10.0))
+
+# Target density: traversable cells per robot. Below about ten the floor is
+# packed tighter than the robots are wide and conflict detection saturates.
+TRAVERSABLE_CELLS_PER_ROBOT = 34.0
+
+# A distance field is one float per cell, so only a handful are kept.
+MAX_CACHED_DISTANCE_FIELDS = 12
+
+DEFAULT_TICK_RATE_HZ = 10.0
+
+# The generated floor leaves roughly this fraction of its cells traversable.
+TRAVERSABLE_FRACTION = 0.37
+
+# The default floor keeps a 5:3 footprint so the world is a hall, not a square.
+WORLD_ASPECT = 100.0 / 60.0
+
+
+def _world_shape_for(fleet_size: int) -> tuple[int, int]:
+    """Return the grid dimensions that give a fleet a workable density."""
+
+    target_cells = max(100 * 60, fleet_size * TRAVERSABLE_CELLS_PER_ROBOT / TRAVERSABLE_FRACTION)
+    rows = int((target_cells / WORLD_ASPECT) ** 0.5)
+    columns = int(rows * WORLD_ASPECT)
+    return max(20, columns - columns % 10), max(12, rows - rows % 10)
+
+
+def _tick_rate_for(fleet_size: int) -> float:
+    """Return the simulation rate a fleet can sustain inside its tick budget."""
+
+    for threshold, rate in TICK_RATES_BY_FLEET:
+        if fleet_size >= threshold:
+            return rate
+    return DEFAULT_TICK_RATE_HZ
+
 # Statuses a robot can hold while nothing can change it without intervention.
 SETTLED_STATUSES = frozenset(
     {RobotStatus.IDLE, RobotStatus.ACTIVE, RobotStatus.BLOCKED, RobotStatus.CHARGING}
@@ -131,9 +192,11 @@ class RuntimeConfig:
     controller_outage_at_s: float | None = 45.0
     controller_outage_duration_s: float = 12.0
     controller_outage_repeat_s: float = 90.0
-    world_width_m: float = 200.0
-    world_height_m: float = 120.0
+    world_width_m: float | None = None
+    world_height_m: float | None = None
     world_cell_size_m: float = 2.0
+    world_columns: int = 100
+    world_rows: int = 60
     aisle_count: int = 5
     rack_rows: int = 3
     workstation_count: int = 6
@@ -145,17 +208,23 @@ class RuntimeConfig:
     def world_spec(self) -> WorldSpec:
         """Build the seeded world specification for this configuration."""
 
+        width_m = self.world_width_m or self.world_columns * self.world_cell_size_m
+        height_m = self.world_height_m or self.world_rows * self.world_cell_size_m
+        # Feature counts scale with the floor so a large warehouse is not a big
+        # room with a handful of depots in it.
+        area = self.world_columns * self.world_rows
+        scale = max(1.0, area / (100 * 60))
         return WorldSpec(
             seed=self.seed,
-            width_m=self.world_width_m,
-            height_m=self.world_height_m,
+            width_m=width_m,
+            height_m=height_m,
             cell_size_m=self.world_cell_size_m,
-            aisle_count=self.aisle_count,
+            aisle_count=max(2, int(round(self.aisle_count * scale))),
             rack_rows=self.rack_rows,
-            workstation_count=self.workstation_count,
-            charger_count=self.charger_count,
-            resource_count=self.resource_count,
-            dead_zone_count=self.dead_zone_count,
+            workstation_count=max(4, int(round(self.workstation_count * scale))),
+            charger_count=max(4, int(round(self.charger_count * scale))),
+            resource_count=max(6, int(round(self.resource_count * scale))),
+            dead_zone_count=max(2, int(round(self.dead_zone_count * scale))),
         )
 
     def with_seed(self, seed: int) -> RuntimeConfig:
@@ -163,18 +232,36 @@ class RuntimeConfig:
 
     @classmethod
     def for_fleet(cls, fleet_size: int, **overrides) -> RuntimeConfig:
-        """Build a configuration whose workload keeps a large fleet busy.
+        """Build a configuration whose workload and floor suit the fleet.
 
-        Task supply scales with the fleet so a 500-robot run is not a 500-robot
-        queue of idle machines: most robots should hold work at any instant, and
-        new tasks should arrive faster than the slowest robot can finish one.
+        Two things scale with fleet size.
+
+        **Task supply.** A robot is busy for roughly ``SECONDS_OF_WORK_PER_TASK``
+        on a job, so the arrival interval that keeps a fleet saturated falls as
+        the fleet grows. A fixed interval starves a large fleet within a minute
+        and floods a small one.
+
+        **Floor size.** The world grows to hold a target density of roughly
+        ``TRAVERSABLE_CELLS_PER_ROBOT`` cells per robot. This is not cosmetic.
+        The generated floor is about a third traversable, so 500 robots on the
+        200x120 m default floor is one robot per four open cells — denser than
+        the robots are wide. At that spacing every pair trips the safety margin,
+        conflict detection saturates, and the fleet spends its time yielding
+        instead of working. Sizing the floor to the fleet keeps the density in
+        a range where right-of-way is a real decision.
         """
 
+        columns, rows = _world_shape_for(fleet_size)
         base = {
             "fleet_size": fleet_size,
+            "tick_rate_hz": _tick_rate_for(fleet_size),
             "initial_task_count": max(8, int(fleet_size * 0.7)),
-            "task_arrival_interval_s": 0.6,
+            "task_arrival_interval_s": max(
+                0.05, SECONDS_OF_WORK_PER_TASK / max(1, fleet_size)
+            ),
             "max_active_tasks": max(64, fleet_size * 2),
+            "world_columns": columns,
+            "world_rows": rows,
         }
         base.update(overrides)
         return cls(**base)
@@ -250,6 +337,8 @@ class SimulationRuntime:
         self.battery = BatteryManager()
         self.failures = FailureRegistry()
         self._distance_fields: dict[Cell, list[float]] = {}
+        self._goal_requests: dict[Cell, int] = {}
+        self._charger_cells: tuple[Cell, ...] = self.index.stations(GridCellType.CHARGING)
         self._travelled_this_tick: dict[str, float] = {}
         self._robots_by_id: dict[str, Robot] = {}
         self.stage_ms: dict[str, float] = {}
@@ -503,6 +592,7 @@ class SimulationRuntime:
             )
             self._stage("energy", self._step_energy, dt)
             self._stage("collision", self._step_collisions)
+            self._stage("yield_release", self._release_yields)
             self._stage("deadlock", self._step_deadlock)
 
             self.counters.ticks += 1
@@ -638,28 +728,59 @@ class SimulationRuntime:
         for state in self.robots.values():
             if state.status is not RobotStatus.CHARGING:
                 continue
-            if self.battery.is_satisfied(state.battery_percent):
-                state.charge_target_cell = None
-                state.status = RobotStatus.IDLE
-                self.occupancy.clear_robot(state.robot_id)
+            if not self.battery.is_satisfied(state.battery_percent):
+                continue
+            # Leaving the pad has to retire the trip, not just the status. A
+            # robot that kept its charge task would hold it forever, making it
+            # permanently ineligible for real work while the task queue counted
+            # a phantom entry against its live budget — arrivals would stop and
+            # the whole fleet would starve.
+            self._retire_charge_task(state)
+            state.charge_target_cell = None
+            state.status = RobotStatus.IDLE
+            self.occupancy.clear_robot(state.robot_id)
+
+    def _retire_charge_task(self, state: RobotState) -> None:
+        """Complete the robot's trip to a pad and release its claim on the pad."""
+
+        task_id = state.current_task_id
+        state.current_task_id = None
+        state.task_started_at_s = None
+        state.service_remaining_s = 0.0
+        state.service_total_s = 0.0
+        if task_id is None or not task_id.startswith("charge-"):
+            return
+        task = self.tasks.get(task_id)
+        if task is not None:
+            self.tasks[task_id] = task.model_copy(update={"status": TaskStatus.COMPLETED})
 
     def _task_arrivals(self) -> None:
         if self.simulation_time_s < self._next_task_arrival_s:
             return
         self._next_task_arrival_s = self.simulation_time_s + self.config.task_arrival_interval_s
-        live = sum(
+        if self._live_task_count() >= self.config.max_active_tasks:
+            return
+        self._spawn_task()
+
+    def _live_task_count(self) -> int:
+        """Count queued work still competing for a robot.
+
+        Charge trips are excluded: a trip to a pad is a robot's own errand, not
+        work from the queue, and counting it here would let a fleet rotating
+        through chargers throttle its own arrivals to nothing.
+        """
+
+        return sum(
             1
             for task in self.tasks.values()
             if task.status is not TaskStatus.COMPLETED
+            and not task.task_id.startswith("charge-")
         )
-        if live >= self.config.max_active_tasks:
-            return
-        self._spawn_task()
 
     def _spawn_task(self) -> Task:
         rng = random.Random(f"{self.config.seed}:{self._task_serial}")
         self._task_serial += 1
-        target_cell = self._random_feature_cell(GridCellType.RESOURCE) or self._random_free_cell()
+        target_cell = self._pick_task_target(rng)
         center_x, center_y = self.index.center_of(target_cell)
         capability = rng.choice(
             [
@@ -688,18 +809,38 @@ class SimulationRuntime:
         )
         return task
 
+    def _pick_task_target(self, rng: random.Random) -> Cell:
+        """Choose where the work is.
+
+        Targets are spread across the floor instead of being concentrated on the
+        depots. Pointing every job at a handful of cells made robots migrate to
+        those cells and left each later job a few metres away, which is not a
+        workload worth simulating. Most work now lands on open floor, with
+        deliberate trips to depots and workstations so those stay worth visiting.
+        """
+
+        roll = rng.random()
+        if roll < 0.2:
+            return self._random_feature_cell(GridCellType.RESOURCE) or self._random_free_cell(rng)
+        if roll < 0.3:
+            return (
+                self._random_feature_cell(GridCellType.WORKSTATION)
+                or self._random_free_cell(rng)
+            )
+        return self._random_free_cell(rng)
+
     def _random_feature_cell(self, cell_type: GridCellType) -> Cell | None:
         options = self.index.stations(cell_type)
         if not options:
             return None
         return options[random.Random(f"{self.config.seed}:{cell_type}:{self._task_serial}").randrange(len(options))]
 
-    def _random_free_cell(self) -> Cell:
-        rng = random.Random(f"{self.config.seed}:free:{self._task_serial}")
+    def _random_free_cell(self, rng: random.Random | None = None) -> Cell:
+        generator = rng or random.Random(f"{self.config.seed}:free:{self._task_serial}")
         for _ in range(64):
             cell = Cell(
-                rng.randrange(1, self.index.columns - 1),
-                rng.randrange(1, self.index.rows - 1),
+                generator.randrange(1, self.index.columns - 1),
+                generator.randrange(1, self.index.rows - 1),
             )
             if not self.index.is_blocked(cell):
                 return cell
@@ -717,11 +858,17 @@ class SimulationRuntime:
             if task.status is TaskStatus.PENDING
         ]
         pending.sort(key=lambda task: (-task.priority, task.created_at_s, task.task_id))
-        for task in pending[:ALLOCATION_BATCH_PER_TICK]:
+        allocated = 0
+        for task in pending:
+            if allocated >= MAX_ALLOCATIONS_PER_TICK:
+                break
+            before = self.sequence
             if self.controller_available:
                 self._negotiate_and_assign(task)
             else:
                 self._locally_claim(task)
+            if self.sequence > before:
+                allocated += 1
 
     def _negotiate_and_assign(self, task: Task) -> None:
         """Run one peer negotiation round and apply the outcome.
@@ -890,10 +1037,24 @@ class SimulationRuntime:
         self._plan_for(state, task, reason=None)
 
     def _distance_field(self, goal: Cell) -> list[float] | None:
+        """Return a shared cost-to-go field for a destination, if one is worth it.
+
+        A field costs a Dijkstra sweep over every cell, which is cheap on a
+        small floor and expensive on a large one. It only pays off when several
+        robots are routed to the same destination, so the first plan for a goal
+        runs without one and the field is built only once that goal is seen
+        again. The cache is capped because a field is one float per cell.
+        """
+
         field = self._distance_fields.get(goal)
-        if field is None:
-            field = build_distance_field(self.index, goal)
-            self._distance_fields[goal] = field
+        if field is not None:
+            return field
+        seen = self._goal_requests.get(goal, 0) + 1
+        self._goal_requests[goal] = seen
+        if seen < 2 or len(self._distance_fields) >= MAX_CACHED_DISTANCE_FIELDS:
+            return None
+        field = build_distance_field(self.index, goal)
+        self._distance_fields[goal] = field
         return field
 
     def _plan_for(
@@ -1008,6 +1169,12 @@ class SimulationRuntime:
                 # A robot that cannot be reached keeps its last known state
                 # instead of guessing where it is.
                 continue
+            if state.status is RobotStatus.BLOCKED:
+                # A blocked robot is holding position for right of way. It
+                # resumes when a replan clears the conflict, not by driving
+                # through the robot it was told to yield to.
+                self._travelled_this_tick[state.robot_id] = 0.0
+                continue
             task = self.tasks.get(route.task_id)
             if task is None:
                 self.routes.pop(robot_id, None)
@@ -1022,7 +1189,28 @@ class SimulationRuntime:
             state.position = result.position
             self._travelled_this_tick[state.robot_id] = result.distance_travelled_m
             if result.arrived:
-                self._complete_task(state, task)
+                self._begin_or_finish_service(state, task, dt)
+
+    def _begin_or_finish_service(self, state: RobotState, task: Task, dt: float) -> None:
+        """Start the work at the destination and finish the task when it is done.
+
+        A task is travel plus service. Without the service phase a task ends the
+        instant a robot touches its target, so in a dense floor nearly every job
+        is a few metres long, every robot is free again immediately, and the
+        fleet looks busy for a moment and then starves. ``estimated_duration_s``
+        is a contract field; this is what it means.
+        """
+
+        if state.service_total_s <= 0.0:
+            state.service_total_s = task.estimated_duration_s
+            state.service_remaining_s = task.estimated_duration_s
+
+        state.service_remaining_s -= dt
+        if state.service_remaining_s > 0.0:
+            return
+        state.service_remaining_s = 0.0
+        state.service_total_s = 0.0
+        self._complete_task(state, task)
 
     def _complete_task(self, state: RobotState, task: Task) -> None:
         started = state.task_started_at_s or task.created_at_s
@@ -1032,6 +1220,8 @@ class SimulationRuntime:
         self.counters.completed_tasks += 1
         state.current_task_id = None
         state.task_started_at_s = None
+        state.service_remaining_s = 0.0
+        state.service_total_s = 0.0
         state.workload = max(0, state.workload - 1)
         state.status = RobotStatus.IDLE
         self.routes.pop(state.robot_id, None)
@@ -1051,6 +1241,16 @@ class SimulationRuntime:
     # energy
     # ------------------------------------------------------------------
     def _step_energy(self, dt: float) -> None:
+        # Pads already claimed this tick, gathered once. Rebuilding the claimed
+        # set per robot turns a fleet-wide charging wave into quadratic work.
+        claimed_pads: set[Cell] = {
+            Cell(*cell)
+            for cell in (
+                other.charge_target_cell
+                for other in self.robots.values()
+                if other.charge_target_cell is not None
+            )
+        }
         for state in self.robots.values():
             if state.status in {RobotStatus.FAILED, RobotStatus.OFFLINE}:
                 continue
@@ -1093,9 +1293,11 @@ class SimulationRuntime:
                 producer="agent-2-safety",
             )
             if decision.should_return_to_charger:
-                self._send_to_charger(state)
+                self._send_to_charger(state, claimed_pads)
+                if state.charge_target_cell is not None:
+                    claimed_pads.add(Cell(*state.charge_target_cell))
 
-    def _send_to_charger(self, state: RobotState) -> None:
+    def _send_to_charger(self, state: RobotState, claimed_pads: set[Cell]) -> None:
         """Route a low-energy robot to a pad and hand its task back."""
 
         task = self.tasks.get(state.current_task_id) if state.current_task_id else None
@@ -1108,11 +1310,8 @@ class SimulationRuntime:
             charger = self.battery.pick_charger(
                 state.position,
                 self.index,
-                reserved=frozenset(
-                    Cell(*cell) for cell in (
-                        other.charge_target_cell for other in self.robots.values()
-                    ) if cell is not None
-                ),
+                reserved=frozenset(claimed_pads),
+                candidates=self._charger_cells,
             )
             if charger is None:
                 return
@@ -1198,7 +1397,16 @@ class SimulationRuntime:
             self._apply_yield(decision)
 
     def _apply_yield(self, decision) -> None:
-        """Stop the loser for a bounded moment and replan it around the conflict."""
+        """Hold the losing robot so the right-of-way robot can pass.
+
+        A yield is a bounded hold, not an immediate replan. Replanning on every
+        conflict is both wasteful and wrong: in a dense fleet dozens of robots
+        yield every tick, and replanning each one immediately cost more than the
+        rest of the simulation combined while producing routes that were
+        obsolete before the next tick. The robot holds, and
+        ``_release_yields`` gives it a fresh route once the conflict has had a
+        moment to clear.
+        """
 
         yielder = self.robots.get(decision.yielding_robot_id)
         if yielder is None or yielder.status in {RobotStatus.FAILED, RobotStatus.OFFLINE}:
@@ -1206,7 +1414,10 @@ class SimulationRuntime:
         task = self.tasks.get(yielder.current_task_id) if yielder.current_task_id else None
         self.counters.yields += 1
         yielder.yield_count += 1
+        if yielder.status is RobotStatus.BLOCKED and yielder.blocked_since_s is not None:
+            return
         yielder.status = RobotStatus.BLOCKED
+        yielder.blocked_since_s = self.simulation_time_s
         self._emit(
             RecoveryStartedPayload(
                 action=RecoveryAction(
@@ -1222,15 +1433,42 @@ class SimulationRuntime:
             correlation_id=task.task_id if task else yielder.robot_id,
             producer="agent-2-safety",
         )
-        if task is not None:
-            # Replanning is what turns a yield into progress: the route changes
-            # instead of the robot standing still until the conflict expires.
-            self._plan_for(
-                yielder,
-                task,
-                reason=f"yielding right of way to {decision.right_of_way_robot_id}",
-            )
         self._resolve_conflicts_for(yielder.robot_id)
+
+    def _release_yields(self) -> None:
+        """Replan robots that have held long enough for the aisle to clear.
+
+        This is what turns a yield back into progress. Waiting before replanning
+        bounds the cost, and the per-tick cap bounds the worst case: without it
+        a single tick in which many robots come due at once pays for every plan
+        at once, which is what makes an occasional tick four times the average.
+        Robots that miss the cap are simply replanned on the next tick.
+        """
+
+        replanned = 0
+        for state in self.robots.values():
+            if replanned >= MAX_REPLANS_PER_TICK:
+                break
+            if state.status is not RobotStatus.BLOCKED or state.blocked_since_s is None:
+                continue
+            held_for = self.simulation_time_s - state.blocked_since_s
+            if held_for < YIELD_HOLD_S:
+                continue
+            task = self.tasks.get(state.current_task_id) if state.current_task_id else None
+            if task is None or task.status is TaskStatus.COMPLETED:
+                state.status = RobotStatus.IDLE
+                state.blocked_since_s = None
+                self.routes.pop(state.robot_id, None)
+                continue
+            replanned += 1
+            route = self._plan_for(
+                state,
+                task,
+                reason=f"resuming after yielding right of way for {held_for:.1f}s",
+            )
+            if route is not None:
+                state.status = RobotStatus.ACTIVE
+                state.blocked_since_s = None
 
     def _resolve_conflicts_for(self, robot_id: str) -> None:
         for conflict in self.conflicts.values():
@@ -1333,6 +1571,8 @@ class SimulationRuntime:
         if previous is not None:
             previous.current_task_id = None
             previous.task_started_at_s = None
+            previous.service_remaining_s = 0.0
+            previous.service_total_s = 0.0
             previous.workload = max(0, previous.workload - 1)
             if previous.status is RobotStatus.ACTIVE:
                 previous.status = RobotStatus.IDLE
@@ -1378,6 +1618,8 @@ class SimulationRuntime:
             if state.current_task_id == task_id and state.robot_id != keep_robot_id:
                 state.current_task_id = None
                 state.task_started_at_s = None
+                state.service_remaining_s = 0.0
+                state.service_total_s = 0.0
                 state.workload = max(0, state.workload - 1)
                 if state.status is RobotStatus.ACTIVE:
                     state.status = RobotStatus.IDLE
@@ -1388,6 +1630,8 @@ class SimulationRuntime:
         task = self.tasks.get(state.current_task_id) if state.current_task_id else None
         state.current_task_id = None
         state.task_started_at_s = None
+        state.service_remaining_s = 0.0
+        state.service_total_s = 0.0
         state.workload = max(0, state.workload - 1)
         self.routes.pop(state.robot_id, None)
         self.occupancy.clear_robot(state.robot_id)

@@ -26,7 +26,15 @@ STRATEGY_FAILED = "astar-grid-failed"
 
 ORTHOGONAL_STEP = 1.0
 DIAGONAL_STEP = 1.4142135623730951
-RESERVATION_PENALTY = 6.0
+
+# Extra cost, in cells of travel, for entering a cell another robot has
+# reserved. It only has to break ties towards a clearer aisle.
+#
+# It must stay small. The static heuristic cannot see reservations, so a large
+# penalty makes real costs diverge sharply from the estimate, A* stops trusting
+# its own guidance, and the search degenerates towards Dijkstra over the whole
+# floor — which is how a 500-robot plan ended up costing 10 ms.
+RESERVATION_PENALTY = 1.5
 MAX_EXPANSIONS = 40000
 
 NEIGHBOURS_8: tuple[tuple[int, int, float], ...] = (

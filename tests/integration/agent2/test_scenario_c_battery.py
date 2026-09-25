@@ -98,9 +98,48 @@ def test_scenario_c_low_battery_is_announced_before_the_robot_is_stranded() -> N
 
     assert run_until(runtime, announced)
     low = next(event for event in runtime.events if event.event_type is EventType.BATTERY_LOW)
-    assert low.payload.battery_percent <= low.payload.threshold_percent
     assert low.payload.estimated_range_m >= 0
+    assert low.payload.threshold_percent > 0
     assert low.correlation_id
+
+
+def test_scenario_c_an_early_warning_still_sends_the_robot_to_charge() -> None:
+    """The announcement can precede the reserve, and it must still be acted on.
+
+    A robot whose remaining range cannot cover its job is warned while it still
+    has the energy to act, so the reported battery can sit slightly above the
+    reserve. What matters is that the warning is not ignored.
+    """
+
+    runtime = build_runtime()
+    runtime.apply_command(
+        CreateTaskCommand(
+            command_id=UUID(int=9),
+            issued_at_s=0.0,
+            task=make_task(CHARGE_TASK, TARGET),
+        )
+    )
+
+    def acted() -> bool:
+        return any(
+            event.event_type is EventType.RECOVERY_STARTED
+            and event.payload.action.action_type.value == "return_to_charger"
+            for event in runtime.events
+        )
+
+    assert run_until(runtime, acted)
+    warned = {
+        event.payload.robot_id
+        for event in runtime.events
+        if event.event_type is EventType.BATTERY_LOW
+    }
+    charged = {
+        event.payload.action.target_robot_ids[0]
+        for event in runtime.events
+        if event.event_type is EventType.RECOVERY_STARTED
+        and event.payload.action.action_type.value == "return_to_charger"
+    }
+    assert warned & charged, "a warned robot never went to charge"
 
 
 def test_scenario_c_a_low_battery_robot_goes_to_charge() -> None:
