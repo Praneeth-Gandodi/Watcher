@@ -1,4 +1,4 @@
-# Watcher
+# Watcher - Workload-Aware Task Coordination for Heterogeneous Entities & Robots
 
 Watcher is a software-only simulation foundation for coordinating 500+ heterogeneous mobile robots in a dense industrial environment. The repository is intentionally a **scaffold**: the dashboard shell and protected contracts are runnable, while negotiation, safety, live simulation, and deployment remain owned by parallel implementation agents.
 
