@@ -346,3 +346,8 @@ class AStarPathPlanner:
             world,
             planned_at_s,
         )
+
+    def reset_versions(self) -> None:
+        """Forget every tracked route version, e.g. on a simulation reset."""
+
+        self._versions.clear()
