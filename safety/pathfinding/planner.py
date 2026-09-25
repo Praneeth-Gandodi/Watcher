@@ -288,27 +288,45 @@ def _string_pull(path: list[Cell], index: WorldIndex) -> list[tuple[float, float
 
 
 def _has_line_of_sight(start: Cell, end: Cell, index: WorldIndex) -> bool:
-    """Supercover line walk between two cells, rejecting blocked intermediates."""
+    """Supercover line walk between two cells, rejecting blocked intermediates.
+
+    A diagonal step touches the two orthogonally adjacent cells it passes
+    between. Testing only the cells the walk actually lands on would let a long
+    straight segment slip diagonally past the corner of a rack block, and the
+    robot would then drive through it. Both intermediates are therefore checked
+    whenever a step moves on both axes.
+    """
 
     x0, y0 = start.x, start.y
     x1, y1 = end.x, end.y
     dx = abs(x1 - x0)
     dy = abs(y1 - y0)
+    if dx == 0 and dy == 0:
+        return True
     sx = 1 if x0 < x1 else -1
     sy = 1 if y0 < y1 else -1
     error = dx - dy
     x, y = x0, y0
+
     while True:
-        if (x, y) != (x1, y1) and index.is_blocked(Cell(x, y)):
-            return False
         if (x, y) == (x1, y1):
             return True
+        if index.is_blocked(Cell(x, y)):
+            return False
+
         doubled = 2 * error
-        if doubled > -dy:
+        step_x = doubled > -dy
+        step_y = doubled < dx
+        if step_x:
             error -= dy
-            x += sx
-        if doubled < dx:
+        if step_y:
             error += dx
+        if step_x and step_y:
+            if index.is_blocked(Cell(x + sx, y)) or index.is_blocked(Cell(x, y + sy)):
+                return False
+        if step_x:
+            x += sx
+        if step_y:
             y += sy
 
 

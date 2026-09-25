@@ -1317,21 +1317,27 @@ class SimulationRuntime:
     def _reassign(self, task: Task, previous_robot_id: str, reason: str) -> None:
         """Move a task to the best remaining candidate robot.
 
+        The task's own record is treated as authoritative about who holds it
+        rather than trusting the caller. A task can be migrated twice in one
+        tick — a deadlock recovery and a low-battery hand-off, say — and the
+        second caller would otherwise release the robot it thinks held the work
+        while the real holder kept it, leaving two robots on one task.
+
         Works with or without the coordinator: with it, the migration runs
         through the same peer negotiation as a fresh assignment; without it, the
-        remaining robots claim the work locally. Either way the task does not
-        stall just because the service is down.
+        remaining robots claim the work locally.
         """
 
-        previous = self.robots.get(previous_robot_id)
+        holder = task.assigned_robot_id or previous_robot_id
+        previous = self.robots.get(holder)
         if previous is not None:
             previous.current_task_id = None
             previous.task_started_at_s = None
             previous.workload = max(0, previous.workload - 1)
             if previous.status is RobotStatus.ACTIVE:
                 previous.status = RobotStatus.IDLE
-            self.routes.pop(previous_robot_id, None)
-            self.occupancy.clear_robot(previous_robot_id)
+            self.routes.pop(holder, None)
+            self.occupancy.clear_robot(holder)
         recovering = task.model_copy(
             update={"status": TaskStatus.RECOVERY, "assigned_robot_id": None}
         )
@@ -1347,17 +1353,36 @@ class SimulationRuntime:
                 update={"status": TaskStatus.PENDING}
             )
             return
+        self._release_task_holder(task.task_id, keep_robot_id=new_robot_id)
         self.counters.task_reassignments += 1
         self._emit(
             TaskReassignedPayload(
                 task_id=task.task_id,
-                previous_robot_id=previous_robot_id,
+                previous_robot_id=holder,
                 new_robot_id=new_robot_id,
                 reason=reason[:500],
             ),
             correlation_id=task.task_id,
             producer="agent-2-runtime",
         )
+
+    def _release_task_holder(self, task_id: str, *, keep_robot_id: str | None) -> None:
+        """Guarantee exactly one robot holds a task.
+
+        Cheap enough to run on every reassignment and it makes the invariant
+        hold by construction rather than by every caller remembering to clear
+        the right robot.
+        """
+
+        for state in self.robots.values():
+            if state.current_task_id == task_id and state.robot_id != keep_robot_id:
+                state.current_task_id = None
+                state.task_started_at_s = None
+                state.workload = max(0, state.workload - 1)
+                if state.status is RobotStatus.ACTIVE:
+                    state.status = RobotStatus.IDLE
+                self.routes.pop(state.robot_id, None)
+                self.occupancy.clear_robot(state.robot_id)
 
     def _release_task(self, state: RobotState, *, reason: str) -> None:
         task = self.tasks.get(state.current_task_id) if state.current_task_id else None

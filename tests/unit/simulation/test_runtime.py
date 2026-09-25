@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from backend.contracts.commands import (
+    CreateTaskCommand,
     InjectCommunicationLossCommand,
     InjectRobotFailureCommand,
     PauseSimulationCommand,
@@ -220,6 +221,82 @@ class TestAllocation:
         runtime = build_runtime(fleet_size=12, initial_task_count=8)
         runtime.run_ticks(400)
         assert runtime.snapshot().metrics.completed_tasks > 0
+
+
+class TestReassignmentIntegrity:
+    """Exactly one robot may hold a task, however many times it is migrated."""
+
+    def prepared(self) -> SimulationRuntime:
+        runtime = build_runtime(fleet_size=20, initial_task_count=0, task_arrival_interval_s=1e9)
+        runtime.apply_command(
+            CreateTaskCommand(
+                command_id=UUID(int=71),
+                issued_at_s=0.0,
+                task=Task(
+                    task_id="task-migrate-01",
+                    target=Position2D(x=40.0, y=40.0),
+                    priority=3,
+                    required_capabilities=("transport",),
+                    estimated_duration_s=20.0,
+                    status=TaskStatus.PENDING,
+                    assigned_robot_id=None,
+                    created_at_s=0.0,
+                ),
+            )
+        )
+        runtime.run_ticks(3)
+        return runtime
+
+    def test_migrating_twice_in_one_tick_leaves_one_holder(self) -> None:
+        runtime = self.prepared()
+        task = next(t for t in runtime.snapshot().tasks if t.task_id == "task-migrate-01")
+        first_holder = task.assigned_robot_id
+        assert first_robot_id_is_valid(runtime, task)
+
+        # A deadlock recovery and a low-battery hand-off can both fire in the
+        # same tick. The second caller still names the original holder, so only
+        # the task's own record knows who really has the work.
+        runtime._reassign(task, first_holder, "deadlock recovery")
+        runtime._reassign(task, first_holder, "battery below the reserve")
+
+        holders = [
+            state.robot_id
+            for state in runtime.robots.values()
+            if state.current_task_id == "task-migrate-01"
+        ]
+        assert len(holders) == 1
+        assert holders[0] == runtime.tasks["task-migrate-01"].assigned_robot_id
+
+    def test_a_stale_caller_cannot_strand_a_second_holder(self) -> None:
+        runtime = self.prepared()
+        task = next(t for t in runtime.snapshot().tasks if t.task_id == "task-migrate-01")
+        first_holder = task.assigned_robot_id
+
+        runtime._reassign(task, first_holder, "first migration")
+        # The same robot may legitimately win the re-auction, so the invariant
+        # under test is agreement, not a change of robot.
+        runtime._reassign(runtime.tasks["task-migrate-01"], first_holder, "second migration")
+
+        holders = [
+            state.robot_id
+            for state in runtime.robots.values()
+            if state.current_task_id == "task-migrate-01"
+        ]
+        assert holders == [runtime.tasks["task-migrate-01"].assigned_robot_id]
+
+    def test_no_robot_holds_two_tasks(self) -> None:
+        runtime = build_runtime(fleet_size=20)
+        runtime.run_ticks(400)
+        held = [
+            state.current_task_id
+            for state in runtime.robots.values()
+            if state.current_task_id is not None
+        ]
+        assert len(held) == len(set(held))
+
+
+def first_robot_id_is_valid(runtime: SimulationRuntime, task: Task) -> bool:
+    return task.assigned_robot_id is not None
 
 
 class TestControllerOutage:

@@ -297,6 +297,97 @@ class TestDistanceField:
         assert blind.waypoints[-1] == informed.waypoints[-1]
 
 
+class TestRouteClearance:
+    """The invariant that matters: no route ever drives through an obstacle.
+
+    The planner validates a string-pulled segment with a supercover cell walk,
+    and that walk is easy to get subtly wrong at diagonal steps. Rather than
+    assert an implementation detail, these tests sample the returned polyline
+    densely and require every sample to be in traversable space.
+    """
+
+    @pytest.mark.parametrize("seed", [2026, 77, 4242])
+    def test_no_planned_segment_crosses_an_obstacle(self, seed: int) -> None:
+        from backend.simulation.world import WorldSpec, build_world
+
+        world = build_world(WorldSpec(seed=seed))
+        index = WorldIndex.from_world(world)
+        stations = index.stations(GridCellType.WORKSTATION) + index.stations(
+            GridCellType.RESOURCE
+        )
+        assert stations
+        origin = Cell(1, 1)
+
+        for ordinal in range(40):
+            goal = stations[ordinal % len(stations)]
+            try:
+                route = plan_route(
+                    robot_id=f"robot-{ordinal:03d}",
+                    task_id=f"task-{ordinal:03d}",
+                    origin=cell_center(index, origin.x, origin.y),
+                    target=cell_center(index, goal.x, goal.y),
+                    world=world,
+                    occupancy=OccupancyGrid(),
+                    planned_at_s=0.0,
+                    route_id=f"route-{ordinal:03d}",
+                    index=index,
+                )
+            except ValueError:
+                # A feature sealed off by the layout is legitimately
+                # unreachable; the runtime delivers to the closest free cell
+                # instead. Clearance is only meaningful for routes that exist.
+                continue
+            for start, end in zip(route.waypoints, route.waypoints[1:], strict=False):
+                for step in range(41):
+                    ratio = step / 40
+                    x = start.x + (end.x - start.x) * ratio
+                    y = start.y + (end.y - start.y) * ratio
+                    assert not index.is_blocked(index.cell_of((x, y))), (
+                        f"route {route.route_id} segment ({start.x},{start.y})->"
+                        f"({end.x},{end.y}) passes through a blocked cell at "
+                        f"({x:.2f},{y:.2f})"
+                    )
+
+    def test_a_diagonal_clip_past_a_blocked_corner_is_rejected(self) -> None:
+        """Two free cells diagonally adjacent must not shortcut a blocked corner."""
+
+        blocked_corner = (2, 2)
+        world = WorldState(
+            width_m=8 * CELL_SIZE,
+            height_m=8 * CELL_SIZE,
+            cell_size_m=CELL_SIZE,
+            columns=8,
+            rows=8,
+            cells=(
+                GridCell(cell_x=1, cell_y=1, cell_type=GridCellType.OBSTACLE),
+                GridCell(cell_x=2, cell_y=1, cell_type=GridCellType.OBSTACLE),
+                GridCell(cell_x=1, cell_y=2, cell_type=GridCellType.OBSTACLE),
+            ),
+            revision=1,
+        )
+        index = WorldIndex.from_world(world)
+        assert index.is_blocked(Cell(*blocked_corner)) is False
+        # A route from (0,0) to (3,3) may not cut through the pocket whose only
+        # free cell is the blocked-corner cell at (2,2).
+        route = plan_route(
+            robot_id="robot-001",
+            task_id="task-001",
+            origin=cell_center(index, 0, 0),
+            target=cell_center(index, 3, 3),
+            world=world,
+            occupancy=OccupancyGrid(),
+            planned_at_s=0.0,
+            route_id="route-001",
+            index=index,
+        )
+        for start, end in zip(route.waypoints, route.waypoints[1:], strict=False):
+            for step in range(41):
+                ratio = step / 40
+                x = start.x + (end.x - start.x) * ratio
+                y = start.y + (end.y - start.y) * ratio
+                assert not index.is_blocked(index.cell_of((x, y)))
+
+
 class TestRouteEfficiency:
     def test_measures_polyline_length(self) -> None:
         waypoints = (Position2D(x=0.0, y=0.0), Position2D(x=3.0, y=4.0))
