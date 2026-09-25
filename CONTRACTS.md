@@ -4,12 +4,14 @@
 
 ## Models
 
-- **Robot**: `robot_id`, `position`, `battery_percent` (0–100), `capabilities`, `workload`, `status`, `current_task_id`, `communication_state`, optional `failure`, and `last_updated_at_s`.
+- **WorldState**: `width_m`, `height_m`, `cell_size_m`, `columns`, `rows`, sparse `GridCell` entries, and `revision`. Cell types are `free`, `obstacle`, `resource`, `charging`, `workstation`, and `deadzone`; unlisted cells are free. Agent 2 owns this backend world.
+- **GridCell**: integer `cell_x`, integer `cell_y`, and typed `cell_type` within world bounds.
+- **Robot**: `robot_id`, world-space `position`, `battery_percent` (0–100), `capabilities`, `workload`, `status`, `current_task_id`, `communication_state`, optional `failure`, and `last_updated_at_s`.
 - **Task**: `task_id`, `target`, `priority` (1–5), `required_capabilities`, `estimated_duration_s`, lifecycle `status`, optional `assigned_robot_id`, and `created_at_s`.
 - **Bid**: `bid_id`, `robot_id`, `task_id`, `total_cost`, distance/battery/workload contributions, estimated completion time, creation time, and validity deadline. `valid_until_s` must be later than creation time.
 - **RoutePlan**: route/task/robot IDs, at least two waypoints, strategy, status, version, and planning time.
 - **Conflict**/**DeadlockReport**/**RecoveryAction**: observable safety state and recovery records; algorithms remain in Agent 2.
-- **SimulationSnapshot**: current robots/tasks/routes/conflicts, metrics, controller availability, revision, and event cursor.
+- **SimulationSnapshot**: current `WorldState`, robots/tasks/routes/conflicts, metrics, controller availability, revision, and event cursor.
 - **SystemMetrics**: fleet/task/conflict/recovery/allocation performance counters.
 
 ## Commands

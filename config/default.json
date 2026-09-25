@@ -3,6 +3,7 @@
   "simulation": {
     "width_m": 200.0,
     "height_m": 120.0,
+    "cell_size_m": 2.0,
     "tick_rate_hz": 10.0,
     "default_fleet_size": 50,
     "scalability_fleet_size": 500,

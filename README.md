@@ -7,6 +7,7 @@ Watcher is a software-only simulation foundation for coordinating 500+ heterogen
 - Python 3.11, FastAPI, Pydantic v2
 - React 19, TypeScript, Vite, CSS
 - pytest and GitHub Actions
+- Agent 2 owns the backend 2D world/grid and safety runtime in `backend/simulation/` and `safety/`
 
 ## Architecture
 

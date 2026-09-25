@@ -114,6 +114,40 @@ class NegotiationStatus(StrEnum):
     UNASSIGNED = "unassigned"
 
 
+class GridCellType(StrEnum):
+    FREE = "free"
+    OBSTACLE = "obstacle"
+    RESOURCE = "resource"
+    CHARGING = "charging"
+    WORKSTATION = "workstation"
+    DEADZONE = "deadzone"
+
+
+class GridCell(ContractModel):
+    cell_x: int = Field(ge=0)
+    cell_y: int = Field(ge=0)
+    cell_type: GridCellType
+
+
+class WorldState(ContractModel):
+    """Static/dynamic 2D world geometry consumed by safety and dashboard."""
+
+    width_m: float = Field(gt=0, allow_inf_nan=False)
+    height_m: float = Field(gt=0, allow_inf_nan=False)
+    cell_size_m: float = Field(gt=0, allow_inf_nan=False)
+    columns: int = Field(ge=1)
+    rows: int = Field(ge=1)
+    cells: tuple[GridCell, ...] = ()
+    revision: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_cell_coordinates(self) -> WorldState:
+        for cell in self.cells:
+            if cell.cell_x >= self.columns or cell.cell_y >= self.rows:
+                raise ValueError("grid cell coordinates must be inside world bounds")
+        return self
+
+
 class Position2D(ContractModel):
     x: float = Field(ge=0, allow_inf_nan=False)
     y: float = Field(ge=0, allow_inf_nan=False)
@@ -295,6 +329,7 @@ class SimulationSnapshot(ContractModel):
     revision: int = Field(ge=0)
     last_event_sequence: int = Field(ge=0)
     controller_available: bool
+    world: WorldState
     robots: tuple[Robot, ...] = ()
     tasks: tuple[Task, ...] = ()
     routes: tuple[RoutePlan, ...] = ()

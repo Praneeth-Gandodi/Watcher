@@ -7,10 +7,11 @@ Watcher is a deterministic, software-only multi-agent simulation. It does not re
 ```text
 Task command -> task broadcast -> candidate discovery -> robot bids
     -> peer negotiation -> task assignment
-    -> route request -> planning and movement safety
+    -> Agent 2 world/grid and route request
+    -> planning, movement, and safety
     -> conflict/deadlock detection -> recovery
     -> task completion and canonical events
-    -> snapshot/event stream -> React dashboard
+    -> SimulationSnapshot + WebSocket event stream -> React dashboard
 ```
 
 ## Subsystems
@@ -18,7 +19,7 @@ Task command -> task broadcast -> candidate discovery -> robot bids
 | Subsystem | Owns | Does not own |
 |---|---|---|
 | Agent 1 | Eligibility, bidding, negotiation, allocation, reassignment, decision events | Planning, movement, collision, deadlock, UI |
-| Agent 2 | Movement, route planning, conflict/right-of-way, deadlock, battery, failure and communication recovery | Negotiation internals, dashboard |
+| Agent 2 | Backend 2D world/grid, robot movement, route planning, conflict/right-of-way, deadlock, battery, failure and communication recovery; publishes safety events | Negotiation internals, dashboard rendering |
 | Agent 3 | React dashboard, state/event visualization, metrics, commands, fault controls | Backend algorithms, fake domain state |
 | Agent 4 | README, architecture diagrams, demos, benchmarks, deployment and presentation | Core product algorithms |
 
@@ -32,11 +33,11 @@ Robot failure, communication loss, battery exhaustion, conflicts, and deadlocks 
 
 ## State and events
 
-`SimulationSnapshot` is the dashboard's point-in-time projection and contains `revision` plus `last_event_sequence`. Events are immutable, versioned, typed, correlated, and monotonically sequenced. Consumers must tolerate delayed, missing, or conflicting observations and must never treat dashboard input as authoritative.
+`SimulationSnapshot` is the dashboard's point-in-time projection and contains `WorldState`, `revision`, and `last_event_sequence`. Agent 2 owns the authoritative world/grid and publishes its state through this projection. Events are immutable, versioned, typed, correlated, and monotonically sequenced. Consumers must tolerate delayed, missing, or conflicting observations and must never treat dashboard input as authoritative.
 
 ## API boundary
 
-The bootstrap health endpoint is `GET /api/v1/health`. Planned integration endpoints are `GET /snapshot`, `GET /robots`, `GET /tasks`, `GET /events`, `GET /metrics`, `POST /commands`, and `WS /stream` under `/api/v1`. Agent 3 must use these real endpoints, not local fake domain algorithms.
+The bootstrap health endpoint is `GET /api/v1/health`. Planned integration endpoints are `GET /snapshot`, `GET /robots`, `GET /tasks`, `GET /events`, `GET /metrics`, `POST /commands`, and `WS /stream` under `/api/v1`. The WebSocket is an event transport for Agent 2/runtime state changes, not a second domain contract. Agent 3 must use these real endpoints, not local fake domain algorithms.
 
 ## Simulation and scale
 

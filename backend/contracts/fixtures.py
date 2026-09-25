@@ -33,6 +33,8 @@ from .models import (
     DeadlockReport,
     FailureInfo,
     FailureKind,
+    GridCell,
+    GridCellType,
     Position2D,
     RecoveryAction,
     RecoveryActionType,
@@ -45,12 +47,28 @@ from .models import (
     Task,
     TaskAssignment,
     TaskStatus,
+    WorldState,
 )
 
 ORIGIN = Position2D(x=10.0, y=12.0)
 TARGET = Position2D(x=44.0, y=38.0)
 EVENT_ID = UUID("00000000-0000-4000-8000-000000000001")
 CORRELATION_ID = "task-task-001"
+
+
+def valid_world() -> WorldState:
+    return WorldState(
+        width_m=40.0,
+        height_m=24.0,
+        cell_size_m=2.0,
+        columns=20,
+        rows=12,
+        cells=(
+            GridCell(cell_x=5, cell_y=4, cell_type=GridCellType.OBSTACLE),
+            GridCell(cell_x=12, cell_y=8, cell_type=GridCellType.CHARGING),
+        ),
+        revision=1,
+    )
 
 
 def valid_robot(robot_id: str = "robot-001") -> Robot:

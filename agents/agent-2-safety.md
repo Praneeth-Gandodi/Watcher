@@ -1,17 +1,24 @@
-# Agent 2 — Safety, Movement, and Recovery
+# Agent 2 — Backend World, Safety, Movement, and Recovery
 
 ## Mission
 
-Implement movement and route planning, collision prediction, right-of-way resolution, deadlock detection/recovery, battery constraints, robot failure handling, communication-loss handling, and safe replanning. This is the safety subsystem, not the negotiation layer.
+You own the backend simulation world and safety runtime. Implement deterministic 2D grid/world state, robot movement, route planning, collision prediction, right-of-way resolution, deadlock detection/recovery, battery constraints, robot failure handling, communication-loss handling, and safe replanning.
+
+Agent 2 is responsible for the **backend source of truth** for robot positions, grid geometry, routes, conflicts, and safety state. Agent 3 renders your state; it does not calculate it.
 
 ## Ownership
 
 May modify:
 
 - `safety/**`
-- `backend/simulation/motion.py`, `backend/simulation/faults.py` and other explicitly assigned runtime files
+- `backend/simulation/world.py`
+- `backend/simulation/grid.py`
+- `backend/simulation/motion.py`
+- `backend/simulation/faults.py`
+- `backend/simulation/runtime.py` only through an integration-reviewed runtime change
 - `tests/unit/safety/**`
-- Agent-owned safety integration tests
+- `tests/unit/simulation/**`
+- Agent-owned safety and simulation integration tests
 - safety-specific decision records
 
 Must not modify:
@@ -22,18 +29,41 @@ Must not modify:
 - deployment, presentation, or another agent's tests
 - protected root documents without an integration PR
 
+## Backend grid/world contract
+
+Read `CONTRACTS.md` and `docs/architecture/visualization.md`. Agent 2 must:
+
+- Create `WorldState` with dimensions, cell size, columns, rows, sparse typed cells, and revision.
+- Map `Position2D` to grid cells consistently.
+- Keep obstacle/resource/charging/workstation/dead-zone geometry in backend state.
+- Update robot positions during simulation ticks.
+- Produce `SimulationSnapshot` state for Agent 3.
+- Publish canonical safety/movement events through the event stream.
+- Never make the dashboard calculate authoritative robot positions.
+
+The backend grid is not a React concern. Agent 3 receives it through the snapshot.
+
 ## Inputs and outputs
 
-Consume canonical `TaskAssigned`, `TaskReassigned`, `Robot`, and relevant failure/battery events. Produce `RoutePlan`, `SafetyDecision`, conflict/deadlock/recovery records, and canonical safety events. Never call or rewrite Agent 1's private negotiation logic.
+Consume canonical `TaskAssigned`, `TaskReassigned`, `Robot`, `WorldState`, and relevant failure/battery events. Produce `RoutePlan`, `SafetyDecision`, `Conflict`, `DeadlockReport`, `RecoveryAction`, updated `SimulationSnapshot`, and canonical safety events. Never call or rewrite Agent 1's private negotiation logic.
+
+## WebSocket responsibility
+
+Agent 2's runtime publishes canonical events to the protected event stream. The protected API/integration layer exposes those events over WebSocket. Agent 3 consumes the stream. Agent 2 must not create a dashboard-specific WebSocket schema or duplicate event names.
 
 ## Required workflow
 
-Read all shared docs first and inspect the existing runtime. Write unit tests for path validity, collision/right-of-way, deadlock cycles, battery thresholds, timeout recovery, and replanning. Add real integration tests for scenarios D–G when the runtime is available. Run focused tests and `python -m pytest tests/contract`.
+1. Read all shared docs and inspect the existing runtime.
+2. Implement the world/grid and movement behind protected contracts.
+3. Write unit tests for cell indexing, world bounds, path validity, collision/right-of-way, deadlock cycles, battery thresholds, timeout recovery, and replanning.
+4. Add executable integration tests for collision, deadlock, battery, failure, communication loss, and controller outage scenarios.
+5. Run focused tests, `python -m pytest tests/contract`, and the full available suite.
+6. Document assumptions and integration impact in the PR.
 
 ## Rules
 
-Keep the planner simple and deterministic. Do not use hidden shared state. Make graceful recovery visible through events and state. Do not implement negotiation, UI, deployment, or unrelated refactors. Do not disable tests.
+Keep the implementation simple and deterministic. Use simulation time, not wall-clock time. Do not use hidden shared state. Make recovery visible through state and canonical events. Do not implement negotiation, UI, deployment, or unrelated refactors. Do not disable tests.
 
 ## PR
 
-Use branch `feat/agent-2-safety`, make small commits, and open a PR. Final report must list changes, tests, contracts/events affected, integration dependencies, and limitations. Ask for human input only for genuine contract ambiguity, ownership conflict, missing requirements, or unavoidable architecture change.
+Use branch `feat/agent-2-safety`, make small reviewable commits, and open a PR. Final report must list files, tests, contracts/events affected, grid/world behavior, WebSocket events produced, integration dependencies, and known limitations. Ask for human input only for genuine contract ambiguity, ownership conflict, missing requirements, or unavoidable architecture change.

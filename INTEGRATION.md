@@ -3,8 +3,8 @@
 ## Ownership
 
 - Agent 1 produces task assignments, negotiation outcomes, and decision events.
-- Agent 2 consumes assignments and produces routes, movement state, safety, battery, failure, deadlock, and recovery events.
-- Agent 3 consumes canonical snapshots/events and produces only validated commands.
+- Agent 2 consumes assignments and produces the authoritative backend `WorldState`, robot movement state, routes, safety, battery, failure, deadlock, recovery events, and WebSocket-ready canonical events.
+- Agent 3 consumes `WorldState`, canonical snapshots/events, and WebSocket updates and produces only validated commands.
 - Agent 4 consumes finished behavior, metrics, logs, screenshots, and architecture information.
 
 ## Communication

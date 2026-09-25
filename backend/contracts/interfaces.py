@@ -19,6 +19,7 @@ from .models import (
     SystemMetrics,
     Task,
     TaskAssignment,
+    WorldState,
 )
 
 
@@ -48,6 +49,7 @@ class PathPlanner(Protocol):
         task_id: str,
         origin: Position2D,
         target: Position2D,
+        world: WorldState,
         planned_at_s: float,
     ) -> RoutePlan: ...
 

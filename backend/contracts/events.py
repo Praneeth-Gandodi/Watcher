@@ -178,10 +178,10 @@ DomainEvent: TypeAlias = Annotated[
     Field(discriminator="event_type"),
 ]
 
-_EVENT_ADAPTER = TypeAdapter(DomainEvent)
+_EVENT_ADAPTER = TypeAdapter(EventEnvelope[DomainEvent])
 
 
-def parse_event(data: object) -> DomainEvent:
-    """Validate an untrusted serialized event against the canonical union."""
+def parse_event(data: object) -> EventEnvelope[DomainEvent]:
+    """Validate an untrusted serialized envelope and its typed payload."""
 
     return _EVENT_ADAPTER.validate_python(data)

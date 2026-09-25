@@ -7,6 +7,8 @@ from .models import (
     Conflict,
     DeadlockReport,
     FailureInfo,
+    GridCell,
+    GridCellType,
     Position2D,
     RecoveryAction,
     Robot,
@@ -14,6 +16,7 @@ from .models import (
     SimulationSnapshot,
     SystemMetrics,
     Task,
+    WorldState,
 )
 
 __all__ = [
@@ -24,6 +27,8 @@ __all__ = [
     "DomainEvent",
     "EventEnvelope",
     "FailureInfo",
+    "GridCell",
+    "GridCellType",
     "Position2D",
     "RecoveryAction",
     "Robot",
@@ -31,6 +36,7 @@ __all__ = [
     "SimulationSnapshot",
     "SystemMetrics",
     "Task",
+    "WorldState",
     "parse_command",
     "parse_event",
 ]

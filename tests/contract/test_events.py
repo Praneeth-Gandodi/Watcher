@@ -15,7 +15,7 @@ def test_every_canonical_event_has_a_valid_payload() -> None:
             event_type=payload.event_type,
             payload=payload,
         )
-        assert parse_event(event.model_dump(mode="json")) == payload
+        assert parse_event(event.model_dump(mode="json")).payload == payload
 
 
 def test_event_vocabulary_is_stable() -> None:

@@ -1,8 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from backend.contracts.fixtures import valid_robot, valid_task
-from backend.contracts.models import Bid, Robot, RobotStatus
+from backend.contracts.fixtures import valid_robot, valid_task, valid_world
+from backend.contracts.models import Bid, GridCellType, Robot, RobotStatus, WorldState
 
 
 def test_robot_and_task_round_trip() -> None:
@@ -17,6 +17,28 @@ def test_unknown_robot_field_is_rejected() -> None:
     data["unexpected"] = True
     with pytest.raises(ValidationError):
         Robot.model_validate(data)
+
+
+def test_world_grid_contract() -> None:
+    world = valid_world()
+    assert world.columns == 20
+    assert world.cells[0].cell_type is GridCellType.OBSTACLE
+    assert world.model_dump(mode="json")["cell_size_m"] == 2.0
+
+
+def test_grid_cell_must_be_inside_world() -> None:
+    with pytest.raises(ValidationError):
+        WorldState.model_validate(
+            {
+                "width_m": 10.0,
+                "height_m": 10.0,
+                "cell_size_m": 1.0,
+                "columns": 2,
+                "rows": 2,
+                "cells": [{"cell_x": 2, "cell_y": 0, "cell_type": "obstacle"}],
+                "revision": 1,
+            }
+        )
 
 
 def test_bid_validity_window_is_enforced() -> None:
