@@ -12,7 +12,7 @@ from backend.app.main import create_app
 from backend.app.service import SimulationService
 from backend.contracts.commands import parse_command
 from backend.contracts.events import parse_event
-from backend.contracts.models import SimulationSnapshot, SystemMetrics
+from backend.contracts.models import RoutePlan, SimulationSnapshot, SystemMetrics
 from backend.simulation.runtime import RuntimeConfig, SimulationRuntime
 
 COMMAND_UUID = "00000000-0000-4000-8000-000000000001"
@@ -34,6 +34,31 @@ def service() -> SimulationService:
 def client(service: SimulationService) -> Iterator[TestClient]:
     with TestClient(create_app(service)) as test_client:
         yield test_client
+
+
+def _queue_task(client: TestClient, task_id: str) -> None:
+    """Submit a task, which always produces a canonical event to observe."""
+
+    response = client.post(
+        "/api/v1/commands",
+        json={
+            "command_id": COMMAND_UUID,
+            "schema_version": 1,
+            "command_type": "CREATE_TASK",
+            "issued_at_s": 0.0,
+            "task": {
+                "task_id": task_id,
+                "target": {"x": 10.0, "y": 10.0},
+                "priority": 3,
+                "required_capabilities": ["transport"],
+                "estimated_duration_s": 30.0,
+                "status": "pending",
+                "assigned_robot_id": None,
+                "created_at_s": 0.0,
+            },
+        },
+    )
+    assert response.status_code == 200
 
 
 class TestHealth:
@@ -74,6 +99,24 @@ class TestSnapshot:
 
     def test_conflicts_endpoint_returns_a_list(self, client: TestClient) -> None:
         assert client.get("/api/v1/conflicts").json()["conflicts"] == []
+
+    def test_routes_endpoint_returns_route_plans(self, client: TestClient) -> None:
+        _queue_task(client, "task-routes-01")
+        service_runtime = client.app.state.service.runtime
+        service_runtime.run_ticks(3)
+        body = client.get("/api/v1/routes").json()
+        assert "routes" in body
+        for route in body["routes"]:
+            RoutePlan.model_validate(route)
+
+    def test_routes_endpoint_agrees_with_the_snapshot(self, client: TestClient) -> None:
+        _queue_task(client, "task-routes-02")
+        client.app.state.service.runtime.run_ticks(3)
+        narrow = {route["route_id"] for route in client.get("/api/v1/routes").json()["routes"]}
+        snapshot = SimulationSnapshot.model_validate(
+            client.get("/api/v1/snapshot").json()
+        )
+        assert narrow == {route.route_id for route in snapshot.routes}
 
     def test_metrics_match_the_canonical_model(self, client: TestClient) -> None:
         metrics = SystemMetrics.model_validate(client.get("/api/v1/metrics").json())
@@ -284,20 +327,24 @@ class TestEventStream:
         assert frame["kind"] == "snapshot"
         SimulationSnapshot.model_validate(frame["data"])
 
-    def test_stream_emits_canonical_events(self, client: TestClient, service: SimulationService) -> None:
+    def test_stream_emits_canonical_events(
+        self, client: TestClient, service: SimulationService
+    ) -> None:
         with client.websocket_connect("/api/v1/stream?after_sequence=0") as socket:
             assert socket.receive_json()["kind"] == "snapshot"
-            # Enough ticks for the world to produce new canonical events.
-            for _ in range(12):
-                service.runtime.tick()
+            # Ticking alone need not publish anything: a fleet that is already
+            # busy travelling and working is quiet. A new command guarantees
+            # an event to observe.
+            _queue_task(client, "task-stream-01")
             kinds = [socket.receive_json()["kind"] for _ in range(4)]
         assert "event" in kinds
 
-    def test_stream_event_frames_validate(self, client: TestClient, service: SimulationService) -> None:
+    def test_stream_event_frames_validate(
+        self, client: TestClient, service: SimulationService
+    ) -> None:
         with client.websocket_connect("/api/v1/stream?after_sequence=0") as socket:
             assert socket.receive_json()["kind"] == "snapshot"
-            for _ in range(12):
-                service.runtime.tick()
+            _queue_task(client, "task-stream-02")
             for _ in range(6):
                 frame = socket.receive_json()
                 if frame["kind"] == "event":

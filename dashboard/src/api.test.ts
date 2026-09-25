@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildStreamUrl, connectToEvents, getEvents, getHealth, getSnapshot } from "./api";
+import {
+  buildStreamUrl,
+  connectToEvents,
+  getEvents,
+  getFleetRefresh,
+  getHealth,
+  getSnapshot,
+} from "./api";
 import { parseStreamFrame } from "./frames";
 
 const world = {
@@ -127,6 +134,110 @@ describe("event history", () => {
   it("names the offending index when history is malformed", async () => {
     mockResponse({ events: [event, { ...event, sequence: 0 }], last_event_sequence: 2 });
     await expect(getEvents(0)).rejects.toThrow(/events\[1\]/);
+  });
+});
+
+describe("narrow refresh", () => {
+  const robot = {
+    robot_id: "robot-0001",
+    position: { x: 4, y: 4 },
+    battery_percent: 72,
+    capabilities: ["transport"],
+    workload: 1,
+    status: "active",
+    current_task_id: "task-0001",
+    communication_state: "online",
+    failure: null,
+    last_updated_at_s: 3,
+  };
+  const task = {
+    task_id: "task-0001",
+    target: { x: 20, y: 20 },
+    priority: 3,
+    required_capabilities: ["transport"],
+    estimated_duration_s: 45,
+    status: "assigned",
+    assigned_robot_id: "robot-0001",
+    created_at_s: 0,
+  };
+  const route = {
+    route_id: "route-1",
+    robot_id: "robot-0001",
+    task_id: "task-0001",
+    waypoints: [
+      { x: 4, y: 4 },
+      { x: 20, y: 20 },
+    ],
+    strategy: "astar-grid-direct",
+    status: "active",
+    version: 1,
+    planned_at_s: 0,
+  };
+  const conflict = {
+    conflict_id: "conflict-1",
+    kind: "right_of_way",
+    severity: "warning",
+    robot_ids: ["robot-0001", "robot-0002"],
+    task_ids: ["task-0001"],
+    position: { x: 8, y: 8 },
+    status: "resolving",
+    detected_at_s: 2,
+  };
+
+  function mockRefresh() {
+    const bodies: Record<string, unknown> = {
+      "/robots": { revision: 7, last_event_sequence: 40, robots: [robot] },
+      "/tasks": { revision: 7, tasks: [task] },
+      "/routes": { revision: 7, routes: [route] },
+      "/conflicts": { revision: 7, conflicts: [conflict] },
+      "/metrics": metrics,
+    };
+    const fetchMock = vi.fn(async (url: string) => {
+      const path = String(url).replace("/api/v1", "");
+      const body = bodies[path];
+      if (body === undefined) throw new Error(`unexpected request: ${path}`);
+      return { ok: true, status: 200, statusText: "OK", json: async () => body };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("assembles a refresh from the narrow endpoints without the world", async () => {
+    const fetchMock = mockRefresh();
+    const refresh = await getFleetRefresh();
+    expect(refresh.revision).toBe(7);
+    expect(refresh.last_event_sequence).toBe(40);
+    expect(refresh.robots[0].robot_id).toBe("robot-0001");
+    expect(refresh.tasks[0].task_id).toBe("task-0001");
+    expect(refresh.routes[0].route_id).toBe("route-1");
+    expect(refresh.conflicts[0].conflict_id).toBe("conflict-1");
+    expect(refresh.metrics.controller_available).toBe(true);
+    // The point of the narrow path: the world is never re-sent.
+    const requested = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(requested).not.toContain("/api/v1/snapshot");
+    expect(requested).toHaveLength(5);
+  });
+
+  it("rejects a malformed robot instead of trusting a cast", async () => {
+    mockRefresh();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ revision: 1, last_event_sequence: 1, robots: [{ nope: true }] }),
+      })),
+    );
+    await expect(getFleetRefresh()).rejects.toThrow();
+  });
+
+  it("surfaces a failed narrow request", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 503, statusText: "Unavailable", json: async () => ({}) })),
+    );
+    await expect(getFleetRefresh()).rejects.toThrow("API 503");
   });
 });
 

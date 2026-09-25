@@ -132,6 +132,21 @@ async def get_conflicts(service: ServiceDep) -> dict[str, Any]:
     }
 
 
+@router.get("/routes")
+async def get_routes(service: ServiceDep) -> dict[str, Any]:
+    """Return the active route plans.
+
+    Routes change on every replan, which is often, so they are served narrowly
+    rather than being dragged along with every other refresh.
+    """
+
+    snapshot = service.runtime.snapshot()
+    return {
+        "revision": snapshot.revision,
+        "routes": [route.model_dump(mode="json") for route in snapshot.routes],
+    }
+
+
 @router.get("/metrics", response_model=SystemMetrics)
 async def get_metrics(service: ServiceDep) -> SystemMetrics:
     """Return the current system metrics."""
@@ -262,6 +277,7 @@ async def service_root() -> JSONResponse:
                 "/api/v1/robots",
                 "/api/v1/tasks",
                 "/api/v1/conflicts",
+                "/api/v1/routes",
                 "/api/v1/metrics",
                 "/api/v1/events?after_sequence={cursor}",
                 "/api/v1/commands",

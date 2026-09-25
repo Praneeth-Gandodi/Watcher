@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { connectToEvents, getEvents, getHealth, getSnapshot, sendCommand } from "./api";
+import { connectToEvents, getEvents, getFleetRefresh, getHealth, getSnapshot, sendCommand } from "./api";
 import { mergeEvents } from "./state";
 import type { ControlCommand, DomainEvent, SimulationSnapshot } from "./types";
 
@@ -105,7 +105,34 @@ export function useFleetConnection(): FleetConnection {
       if (disposedRef.current || refreshInFlightRef.current) return;
       refreshInFlightRef.current = true;
       try {
-        applySnapshot(await getSnapshot());
+        if (!hasSnapshotRef.current) {
+          applySnapshot(await getSnapshot());
+          return;
+        }
+        // Subsequent refreshes take the narrow endpoints. The world is static,
+        // and re-sending several hundred racking cells on every poll is the
+        // difference between a console that keeps up and one that does not.
+        const refresh = await getFleetRefresh();
+        if (disposedRef.current) return;
+        setSnapshot((current) => {
+          if (current === null) return current;
+          return {
+            ...current,
+            revision: refresh.revision,
+            last_event_sequence: Math.max(
+              current.last_event_sequence,
+              refresh.last_event_sequence,
+            ),
+            robots: refresh.robots,
+            tasks: refresh.tasks,
+            routes: refresh.routes,
+            conflicts: refresh.conflicts,
+            metrics: refresh.metrics,
+          };
+        });
+        setLastSync(new Date());
+        setConnection("live");
+        setNotice(null);
       } catch (error) {
         setConnection(hasSnapshotRef.current ? "stale" : "offline");
         setNotice({
@@ -244,6 +271,8 @@ export function useFleetConnection(): FleetConnection {
     setConnection(hasSnapshotRef.current ? "stale" : "connecting");
     void (async () => {
       try {
+        // An explicit refresh always takes the full projection, so a world
+        // rebuilt by a reset is picked up rather than left stale.
         applySnapshot(await getSnapshot());
       } catch {
         setConnection(hasSnapshotRef.current ? "stale" : "offline");

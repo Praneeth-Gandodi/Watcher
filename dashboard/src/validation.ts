@@ -256,6 +256,24 @@ export function parseMetrics(value: unknown): SystemMetrics {
   return asMetrics(value, "metrics");
 }
 
+export function parseRobots(value: unknown): Robot[] {
+  return asArray(value ?? [], "robots").map((robot, index) => asRobot(robot, `robots[${index}]`));
+}
+
+export function parseTasks(value: unknown): Task[] {
+  return asArray(value ?? [], "tasks").map((task, index) => asTask(task, `tasks[${index}]`));
+}
+
+export function parseConflicts(value: unknown): Conflict[] {
+  return asArray(value ?? [], "conflicts").map((conflict, index) =>
+    asConflict(conflict, `conflicts[${index}]`),
+  );
+}
+
+export function parseRoutes(value: unknown): RoutePlan[] {
+  return asArray(value ?? [], "routes").map((route, index) => asRoute(route, `routes[${index}]`));
+}
+
 export function parseCommandAccepted(
   value: unknown,
 ): { command_id: string; command_type: string; accepted: boolean; last_event_sequence: number } {

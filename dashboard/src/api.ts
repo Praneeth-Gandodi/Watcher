@@ -1,17 +1,25 @@
 import { parseStreamFrame } from "./frames";
 import {
   parseCommandAccepted,
+  parseConflicts,
   parseEventsResponse,
   parseHealth,
   parseMetrics,
+  parseRobots,
+  parseRoutes,
   parseSnapshot,
+  parseTasks,
 } from "./validation";
 import type {
+  Conflict,
   ControlCommand,
   DomainEvent,
+  Robot,
+  RoutePlan,
   SimulationSnapshot,
   StreamFrame,
   SystemMetrics,
+  Task,
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
@@ -45,6 +53,51 @@ export function getEvents(afterSequence = 0): Promise<DomainEvent[]> {
   return requestJson(`/events?after_sequence=${afterSequence}`).then(
     (raw) => parseEventsResponse(raw).events,
   );
+}
+
+export interface FleetRefresh {
+  revision: number;
+  last_event_sequence: number;
+  robots: Robot[];
+  tasks: Task[];
+  routes: RoutePlan[];
+  conflicts: Conflict[];
+  metrics: SystemMetrics;
+}
+
+/**
+ * Fetch only what changes between snapshots.
+ *
+ * `SimulationSnapshot` carries the whole world, and on a 500-robot floor that
+ * is most of the payload — several hundred sparse cells of racking that never
+ * change. A live console re-pulls the projection on a timer, so the narrow
+ * endpoints are the refresh path and the full snapshot is only taken on connect
+ * or on reconnect.
+ */
+export async function getFleetRefresh(): Promise<FleetRefresh> {
+  const [robots, tasks, routes, conflicts, metrics] = await Promise.all([
+    requestJson("/robots"),
+    requestJson("/tasks"),
+    requestJson("/routes"),
+    requestJson("/conflicts"),
+    requestJson("/metrics"),
+  ]);
+  return {
+    revision: asNumber((robots as { revision: unknown }).revision),
+    last_event_sequence: asNumber(
+      (robots as { last_event_sequence: unknown }).last_event_sequence,
+    ),
+    robots: parseRobots((robots as { robots: unknown }).robots),
+    tasks: parseTasks((tasks as { tasks: unknown }).tasks),
+    routes: parseRoutes((routes as { routes: unknown }).routes),
+    conflicts: parseConflicts((conflicts as { conflicts: unknown }).conflicts),
+    metrics: parseMetrics(metrics),
+  };
+}
+
+function asNumber(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return value;
 }
 
 export function getMetrics(): Promise<SystemMetrics> {
