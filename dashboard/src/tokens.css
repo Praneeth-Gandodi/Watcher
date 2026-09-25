@@ -47,14 +47,15 @@
   --idle: oklch(60% 0.02 254);
   --idle-wash: oklch(60% 0.02 254 / 0.12);
 
-  --map-floor: oklch(17% 0.016 256);
-  --map-grid: oklch(100% 0 0 / 0.05);
-  --map-boundary: oklch(48% 0.03 250);
-  --map-cell-obstacle: oklch(32% 0.018 256);
-  --map-cell-workstation: oklch(58% 0.11 78);
-  --map-cell-charging: oklch(56% 0.13 226);
-  --map-cell-resource: oklch(54% 0.09 168);
-  --map-cell-deadzone: oklch(46% 0.05 330);
+  --map-floor: oklch(16% 0.016 256);
+  --map-grid: oklch(100% 0 0 / 0.055);
+  --map-boundary: oklch(52% 0.035 250);
+  --map-cell-obstacle: oklch(33% 0.02 256);
+  --map-cell-workstation: oklch(60% 0.12 76);
+  --map-cell-charging: oklch(58% 0.14 226);
+  --map-cell-resource: oklch(56% 0.1 168);
+  --map-cell-deadzone: oklch(48% 0.06 330);
+  --map-cell-edge: oklch(100% 0 0 / 0.08);
 
   --focus: oklch(80% 0.14 78);
   --shadow-panel: 0 1px 2px oklch(0% 0 0 / 0.4);
@@ -96,14 +97,15 @@
   --idle: oklch(62% 0.02 254);
   --idle-wash: oklch(62% 0.02 254 / 0.1);
 
-  --map-floor: oklch(98.5% 0.003 250);
-  --map-grid: oklch(20% 0.02 258 / 0.07);
-  --map-boundary: oklch(45% 0.02 252);
-  --map-cell-obstacle: oklch(84% 0.012 252);
-  --map-cell-workstation: oklch(78% 0.11 78);
-  --map-cell-charging: oklch(80% 0.1 226);
-  --map-cell-resource: oklch(82% 0.08 168);
-  --map-cell-deadzone: oklch(80% 0.05 330);
+  --map-floor: oklch(97% 0.007 250);
+  --map-grid: oklch(20% 0.02 258 / 0.09);
+  --map-boundary: oklch(38% 0.02 252);
+  --map-cell-obstacle: oklch(76% 0.014 252);
+  --map-cell-workstation: oklch(72% 0.13 72);
+  --map-cell-charging: oklch(74% 0.12 226);
+  --map-cell-resource: oklch(76% 0.1 168);
+  --map-cell-deadzone: oklch(74% 0.07 330);
+  --map-cell-edge: oklch(24% 0.02 258 / 0.22);
 
   --focus: oklch(50% 0.17 250);
   --shadow-panel: 0 1px 2px oklch(24% 0.02 258 / 0.08);

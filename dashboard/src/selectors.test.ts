@@ -180,7 +180,9 @@ describe("stat tiles", () => {
   it("reads its figures from the snapshot metrics", () => {
     const tiles = statTiles(snapshot());
     const fleet = tiles.find((tile) => tile.key === "fleet");
+    // The headline number is the fleet size, with the working split as detail.
     expect(fleet?.value).toBe("1");
+    expect(fleet?.detail).toBe("1 active · 0 idle");
     const throughput = tiles.find((tile) => tile.key === "throughput");
     expect(throughput?.value).toBe("13");
   });

@@ -112,6 +112,7 @@ function readPalette() {
     charging: token("--map-cell-charging", "#1d4ed8"),
     resource: token("--map-cell-resource", "#0e7490"),
     deadzone: token("--map-cell-deadzone", "#4c1d95"),
+    cellEdge: token("--map-cell-edge", "rgba(0,0,0,0.18)"),
     ok: token("--ok", "#4ade80"),
     warn: token("--warn", "#fbbf24"),
     crit: token("--crit", "#fb7185"),
@@ -223,8 +224,15 @@ export default function FleetMap({
       for (const cell of world.cells) {
         const x = left + cell.cell_x * cellSize;
         const y = top + worldHeight - (cell.cell_y + 1) * cellSize;
+        const size = Math.max(1, cellSize);
         context.fillStyle = cellColor(cell.cell_type, palette);
-        context.fillRect(x, y, Math.max(1, cellSize), Math.max(1, cellSize));
+        context.fillRect(x, y, size, size);
+        // A hairline keeps racking reading as solid structure rather than a
+        // tint, and it is the only thing that separates two adjacent blocks
+        // in the light theme.
+        context.strokeStyle = palette.cellEdge;
+        context.lineWidth = 1;
+        context.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
       }
     }
 

@@ -171,8 +171,8 @@ export function statTiles(snapshot: SimulationSnapshot | null): StatTile[] {
     {
       key: "fleet",
       label: "Fleet",
-      value: String(counts.active),
-      detail: `${counts.total} robots · ${counts.idle} idle`,
+      value: String(counts.total),
+      detail: `${counts.active} active · ${counts.idle} idle`,
       // The backend's own failure count is authoritative here: it counts robots
       // the dashboard may not even be holding in its projection.
       tone: metrics.failed_robots > 0 ? "crit" : "ok",

@@ -7,7 +7,7 @@
  * stays cheap enough to run beside a 500-robot canvas.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TriangleAlert, X } from "lucide-react";
 
 import FleetMap, { DEFAULT_LAYERS } from "./components/FleetMap";
@@ -36,6 +36,18 @@ export default function App() {
   const [layers, setLayers] = useState<MapLayers>(DEFAULT_LAYERS);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [cameraResetToken, setCameraResetToken] = useState(0);
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
+
+  // The theme attribute is written before the state update, not in an effect.
+  // The map reads its canvas colours out of the document during render, so if
+  // the attribute were applied afterwards the canvas would keep drawing the
+  // previous theme's palette — which is exactly what an effect-based flip does.
+  const toggleTheme = useCallback(() => {
+    const next = nextTheme(themeRef.current);
+    applyTheme(next);
+    setTheme(next);
+  }, []);
 
   useEffect(() => {
     applyTheme(theme);
@@ -112,7 +124,7 @@ export default function App() {
         controllerAvailable={snapshot ? snapshot.controller_available : null}
         controllerOutages={snapshot?.metrics.extra_metrics.controller_outages ?? null}
         theme={theme}
-        onToggleTheme={() => setTheme((current) => nextTheme(current))}
+        onToggleTheme={toggleTheme}
         onRefresh={fleet.refresh}
         onOpenPalette={() => setPaletteOpen(true)}
       />
