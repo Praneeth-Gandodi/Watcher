@@ -80,6 +80,9 @@ __all__ = [
     "ReassignmentOutcome",
     "build_coordinator",
     "build_demo_coordinator",
+    "empty_outcome",
+    "get_coordinator",
+    "reset_coordinator",
 ]
 
 #: Agent 2 event payloads that Agent 1's ReassignmentService consumes.
@@ -390,6 +393,31 @@ def build_demo_coordinator() -> FleetCoordinator:
     """Build the coordinator used by the HTTP layer and the demo."""
 
     return build_coordinator(robot_count=5)
+
+
+_COORDINATOR: FleetCoordinator | None = None
+
+
+def get_coordinator() -> FleetCoordinator:
+    """Return the process-wide coordinator, creating it on first use.
+
+    The HTTP layer resolves its dependency through this function so the whole
+    process shares one simulation. Tests that need an isolated simulation should
+    call :func:`build_coordinator` directly and override the dependency instead
+    of mutating this global.
+    """
+
+    global _COORDINATOR
+    if _COORDINATOR is None:
+        _COORDINATOR = build_demo_coordinator()
+    return _COORDINATOR
+
+
+def reset_coordinator() -> None:
+    """Discard the process-wide coordinator, e.g. between test cases."""
+
+    global _COORDINATOR
+    _COORDINATOR = None
 
 
 def empty_outcome(task_id: str, observed_at_s: float) -> NegotiationOutcome:
