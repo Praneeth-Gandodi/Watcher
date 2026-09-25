@@ -29,6 +29,10 @@ Read all shared docs and inspect the running system. Capture evidence only from 
 
 Do not change product logic to improve a demo. Do not publish secrets, unsupported claims, or fabricated screenshots. Ask for human input for repository ownership, team details, credentials, hosting account, or an unresolved contract conflict—not for routine documentation choices.
 
+## Commit policy
+
+Do not wait until the entire demo/documentation/deployment task is complete to make one commit. Commit coherent slices such as architecture diagrams, scenario definitions, deployment configuration, verified metrics, screenshots, README updates, and presentation assets as they become reviewable. Use focused messages such as `docs(agent-4): add failure demo`, `feat(agent-4): add deployment config`, and `fix(agent-4): correct benchmark instructions`. Keep each commit single-purpose and passing relevant verification. Before opening the PR, inspect `git log --oneline main..HEAD`; preserve the meaningful commit sequence and do not squash by default.
+
 ## PR
 
 Use branch `feat/agent-4-demo`, small commits, and a PR. Final report must list documents/assets/deployment changes, verification commands, source revision, URL, and known limitations. Ask for help only for genuine external access or ownership ambiguity.

@@ -18,6 +18,16 @@ Read this file, `ARCHITECTURE.md`, `CONTRACTS.md`, `TESTING.md`, `INTEGRATION.md
 - Do not implement another subsystem, fake backend behavior in the UI, or create hidden coupling.
 - Use separate branches and separate clones/worktrees. Never push directly to `main`.
 
+## Commit policy
+
+- Do not wait until the entire feature is finished to create one giant commit.
+- Commit each coherent vertical slice as it becomes reviewable: feature, fix, test, documentation, or integration change.
+- Use conventional focused messages such as `feat(agent-1): add bid eligibility`, `fix(agent-2): handle expired routes`, `test(agent-3): cover snapshot loading`, and `docs(agent-4): document recovery demo`.
+- Keep each commit limited to one purpose and passing relevant tests. Do not mix an unrelated feature, refactor, generated output, or contract change into a feature commit.
+- Before opening a PR, inspect `git log --oneline main..HEAD` and ensure the branch contains a readable sequence of meaningful commits, not one commit containing the whole task.
+- Do not rewrite unrelated history, force-push shared branches, or squash the feature branch by default. Preserve the focused commit sequence unless the maintainer explicitly requests a squash.
+- A fix discovered during development should be a separate `fix(...)` commit when it is independently understandable.
+
 ## Scope and blockers
 
 If the contract answers the question, implement it. Choose the simplest reasonable internal design and document the assumption. Ask for human input only for a genuine contract ambiguity, ownership conflict, missing required information, or unavoidable architecture change.

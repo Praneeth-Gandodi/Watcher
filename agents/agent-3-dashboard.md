@@ -83,6 +83,10 @@ Consume canonical REST snapshots and WebSocket events. Produce only validated co
 
 Use real backend endpoints, accessible keyboard/focus behavior, reduced motion, responsive layouts, and honest empty/disconnected states. Do not fake backend behavior to make the UI work. Do not add a second event vocabulary or modify public schemas.
 
+## Commit policy
+
+Do not wait until the entire dashboard is complete to make one giant commit. Commit coherent slices such as API client, snapshot state, WebSocket events, world renderer, robot markers, routes/conflicts, controls, professional visual system, and tests as they become reviewable. Use focused messages such as `feat(agent-3): connect snapshot client`, `fix(agent-3): handle stale event stream`, and `test(agent-3): cover 500 robot rendering`. Keep each commit single-purpose and passing its relevant checks. Before opening the PR, inspect `git log --oneline main..HEAD`; preserve the meaningful commit sequence and do not squash by default.
+
 ## PR
 
 Use branch `feat/agent-3-dashboard`, small commits, and a PR. Final report must list components, endpoints/events consumed, commands produced, grid rendering approach, accessibility/performance notes, tests, and limitations. Ask for human input only for genuine contract ambiguity, unavailable backend endpoints, or ownership conflicts.

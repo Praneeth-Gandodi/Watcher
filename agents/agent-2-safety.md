@@ -64,6 +64,10 @@ Agent 2's runtime publishes canonical events to the protected event stream. The 
 
 Keep the implementation simple and deterministic. Use simulation time, not wall-clock time. Do not use hidden shared state. Make recovery visible through state and canonical events. Do not implement negotiation, UI, deployment, or unrelated refactors. Do not disable tests.
 
+## Commit policy
+
+Do not wait until the entire safety/world implementation is complete to make one commit. Commit coherent slices such as world creation, grid indexing, movement, route planning, collision handling, deadlock recovery, battery handling, failure recovery, and tests as they become reviewable. Use focused messages such as `feat(agent-2): add world grid`, `fix(agent-2): prevent route boundary crossing`, and `test(agent-2): cover deadlock recovery`. Keep each commit single-purpose and passing its relevant tests. Before opening the PR, inspect `git log --oneline main..HEAD`; preserve the meaningful commit sequence and do not squash by default.
+
 ## PR
 
 Use branch `feat/agent-2-safety`, make small reviewable commits, and open a PR. Final report must list files, tests, contracts/events affected, grid/world behavior, WebSocket events produced, integration dependencies, and known limitations. Ask for human input only for genuine contract ambiguity, ownership conflict, missing requirements, or unavoidable architecture change.

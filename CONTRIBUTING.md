@@ -6,6 +6,16 @@
 - Use `feat/agent-1-negotiation`, `feat/agent-2-safety`, `feat/agent-3-dashboard`, or `feat/agent-4-demo`.
 - Keep commits small, focused, and conventionally named, for example `feat(agent-1): add bid validation`.
 
+## Commit workflow
+
+- Do not make one large commit after completing an entire agent task.
+- Commit coherent feature slices, fixes, tests, and documentation as they are completed.
+- Each commit should have one purpose, a conventional message, and relevant tests passing.
+- Recommended sequence: contract/interface if needed → feature implementation → tests → integration/documentation.
+- Use `fix(agent-N): ...` for independently understandable bug fixes.
+- Before opening a PR, run `git log --oneline main..HEAD` and verify the branch has a useful commit history.
+- Preserve the commit sequence when merging; do not squash by default unless the maintainer explicitly requests it.
+
 ## Pull requests
 
 Every PR must state:
