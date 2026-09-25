@@ -1,0 +1,26 @@
+{
+  "seed": 2026,
+  "simulation": {
+    "width_m": 200.0,
+    "height_m": 120.0,
+    "tick_rate_hz": 10.0,
+    "default_fleet_size": 50,
+    "scalability_fleet_size": 500,
+    "max_events_in_memory": 10000
+  },
+  "negotiation": {
+    "bid_validity_s": 5.0,
+    "default_round_timeout_s": 2.0,
+    "battery_reserve_percent": 15.0
+  },
+  "network": {
+    "default_packet_delay_ms": 50,
+    "maximum_packet_delay_ms": 750,
+    "communication_loss_timeout_s": 3.0
+  },
+  "fault_injection": {
+    "controller_outage_enabled": true,
+    "robot_failure_enabled": true,
+    "communication_loss_enabled": true
+  }
+}

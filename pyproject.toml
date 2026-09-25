@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watcher-fleet"
+version = "0.1.0"
+description = "Decentralized multi-robot coordination simulation foundation"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Watcher team" }]
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "pydantic>=2.10,<3.0",
+  "uvicorn[standard]>=0.34,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1.0",
+  "pytest>=8.3,<9.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*", "safety*"]
+
+[tool.pytest.ini_options]
+minversion = "8.3"
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "unit: focused component tests",
+  "contract: shared interface and serialization tests",
+  "integration: end-to-end subsystem tests",
+  "scalability: larger-fleet performance tests",
+]
