@@ -124,6 +124,32 @@ class WorldIndex:
     def stations(self, cell_type: GridCellType) -> tuple[Cell, ...]:
         return self.cells_of_type.get(cell_type, ())
 
+    def nearest_traversable_cell(self, position: Position2D | tuple[float, float]) -> Cell | None:
+        """Return the traversable cell closest to a world position.
+
+        Used when a requested origin or target falls inside an obstacle: the
+        caller still gets a usable cell, and it is genuinely the closest one
+        rather than whichever cell a ring search happened to reach first.
+        """
+
+        x, y = (position.x, position.y) if isinstance(position, Position2D) else position
+        start = self.cell_of((x, y))
+        if not self.is_blocked(start):
+            return start
+        for radius in range(1, max(self.columns, self.rows) + 1):
+            best: Cell | None = None
+            best_distance = 0.0
+            for candidate in self._ring(start, radius):
+                if not self.contains(candidate) or self.is_blocked(candidate):
+                    continue
+                center_x, center_y = self.center_of(candidate)
+                distance = (center_x - x) ** 2 + (center_y - y) ** 2
+                if best is None or distance < best_distance:
+                    best, best_distance = candidate, distance
+            if best is not None:
+                return best
+        return None
+
     def nearest_cell_of_type(
         self,
         origin: Position2D,

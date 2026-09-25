@@ -59,10 +59,17 @@ class RobotState:
 
 @dataclass(slots=True)
 class FleetProfile:
-    """Speed, capability, and battery spread used when seeding a fleet."""
+    """Speed, capability, and battery spread used when seeding a fleet.
 
-    min_speed_mps: float = 0.8
-    max_speed_mps: float = 2.2
+    Speeds are higher than a real warehouse AMR would manage. That is a
+    deliberate time compression: at 1.4 m/s a 120 m aisle crossing takes almost
+    two minutes of simulated time, which is long enough that a reviewer watching
+    a live demo sees a fleet that appears to stand still. The values are
+    documented rather than tuned silently so the trade-off is visible.
+    """
+
+    min_speed_mps: float = 1.6
+    max_speed_mps: float = 3.2
     min_battery_percent: float = 35.0
     max_battery_percent: float = 100.0
     capability_pool: tuple[RobotCapability, ...] = (

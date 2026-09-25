@@ -165,17 +165,8 @@ def _nearest_traversable(
     end there; only static obstacles and dead zones are hard blocks.
     """
 
-    if index.contains(cell) and not index.is_blocked(cell):
-        return cell
-    for radius in range(1, max(index.columns, index.rows) + 1):
-        for dx in range(-radius, radius + 1):
-            for dy in (-radius, radius + 1):
-                if abs(dx) != radius and abs(dy) != radius:
-                    continue
-                candidate = Cell(cell.x + dx, cell.y + dy)
-                if index.contains(candidate) and not index.is_blocked(candidate):
-                    return candidate
-    return None
+    center_x, center_y = index.center_of(cell)
+    return index.nearest_traversable_cell((center_x, center_y))
 
 
 def _search(
