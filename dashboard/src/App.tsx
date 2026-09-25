@@ -233,12 +233,9 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!snapshot) return;
-    const runtimeSpeed = snapshot.metrics.extra_metrics.simulation_speed_multiplier;
-    if (!speedInitializedRef.current || typeof runtimeSpeed === "number") {
-      setSpeedMultiplier(getRuntimeSpeedMultiplier(snapshot));
-      speedInitializedRef.current = true;
-    }
+    if (!snapshot || speedInitializedRef.current) return;
+    setSpeedMultiplier(getRuntimeSpeedMultiplier(snapshot));
+    speedInitializedRef.current = true;
   }, [snapshot]);
 
   const selectedRobot = useMemo<Robot | null>(
