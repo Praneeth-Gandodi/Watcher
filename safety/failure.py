@@ -94,8 +94,20 @@ class FailureRegistry:
             return False
         return battery_percent > 0.0
 
-    def evaluate(self, robot: Robot, *, now_s: float) -> HealthVerdict:
-        """Decide the robot's authoritative health for this tick.
+    def evaluate(
+        self,
+        robot_id: str,
+        battery_percent: float,
+        status: RobotStatus,
+        communication_state: CommunicationState,
+        *,
+        now_s: float,
+    ) -> HealthVerdict:
+        """Decide a robot's authoritative health for this tick.
+
+        The observed values are passed in rather than a ``Robot`` so the verdict
+        is based on the simulation's own numbers instead of a wire projection
+        that rounds energy to two decimal places.
 
         Precedence is deliberate: an explicit failure beats communication loss,
         and communication loss beats normal operation. A robot that cannot be
@@ -104,17 +116,17 @@ class FailureRegistry:
         recovery.
         """
 
-        failure = self.failures.get(robot.robot_id)
+        failure = self.failures.get(robot_id)
         if failure is not None:
             return HealthVerdict(
                 usable=False,
                 status=RobotStatus.FAILED,
-                communication_state=robot.communication_state,
+                communication_state=communication_state,
                 failure=failure,
                 reason=f"failure {failure.kind}/{failure.code} is active",
             )
 
-        if self.is_silenced(robot.robot_id, now_s=now_s):
+        if self.is_silenced(robot_id, now_s=now_s):
             return HealthVerdict(
                 usable=False,
                 status=RobotStatus.DEGRADED,
@@ -123,7 +135,7 @@ class FailureRegistry:
                 reason="peer heartbeat timed out",
             )
 
-        if robot.battery_percent <= 0.0:
+        if battery_percent <= 0.0:
             return HealthVerdict(
                 usable=False,
                 status=RobotStatus.OFFLINE,
@@ -139,7 +151,7 @@ class FailureRegistry:
 
         return HealthVerdict(
             usable=True,
-            status=robot.status,
+            status=status,
             communication_state=CommunicationState.ONLINE,
             failure=None,
             reason="nominal",

@@ -572,7 +572,13 @@ class SimulationRuntime:
                 continue
             previous_status = state.status
             previous_communication = state.communication_state
-            verdict = self.failures.evaluate(state.to_contract(), now_s=self.simulation_time_s)
+            verdict = self.failures.evaluate(
+                state.robot_id,
+                state.battery_percent,
+                state.status,
+                state.communication_state,
+                now_s=self.simulation_time_s,
+            )
 
             if verdict.usable:
                 state.communication_state = CommunicationState.ONLINE
@@ -594,12 +600,20 @@ class SimulationRuntime:
             state.last_updated_at_s = self.simulation_time_s
 
             if previous_status is not RobotStatus.FAILED and state.status is RobotStatus.FAILED:
+                orphaned_task = (
+                    self.tasks.get(state.current_task_id) if state.current_task_id else None
+                )
                 self._emit(
                     RobotFailedPayload(robot_id=state.robot_id, failure=verdict.failure),
                     correlation_id=state.current_task_id or state.robot_id,
                     producer="agent-2-safety",
                 )
-                self._release_task(state, reason="robot failure")
+                if orphaned_task is not None:
+                    # A failure is a reassignment, not a cancellation: the work
+                    # migrates to another robot and the event says so.
+                    self._reassign(orphaned_task, state.robot_id, "robot failure")
+                else:
+                    self._release_task(state, reason="robot failure")
             if (
                 previous_communication is not CommunicationState.LOST
                 and state.communication_state is CommunicationState.LOST
@@ -624,7 +638,7 @@ class SimulationRuntime:
         for state in self.robots.values():
             if state.status is not RobotStatus.CHARGING:
                 continue
-            if self.battery.is_satisfied(state.to_contract()):
+            if self.battery.is_satisfied(state.battery_percent):
                 state.charge_target_cell = None
                 state.status = RobotStatus.IDLE
                 self.occupancy.clear_robot(state.robot_id)
@@ -1041,11 +1055,14 @@ class SimulationRuntime:
             if state.status in {RobotStatus.FAILED, RobotStatus.OFFLINE}:
                 continue
             # Energy follows the distance actually covered this tick, recorded
-            # by the movement step. Using the remaining route length here would
-            # charge the robot for the whole journey on every single tick.
+            # by the movement step, and starts from the raw state value. Using
+            # the remaining route length would charge the robot for the whole
+            # journey every tick; reading a projected contract would feed back a
+            # rounded battery and freeze it.
             travelled = self._travelled_this_tick.get(state.robot_id, 0.0)
             state.battery_percent = self.battery.drain(
-                self._contract_of(state),
+                state.battery_percent,
+                state.status,
                 distance_travelled_m=travelled,
                 elapsed_s=dt,
                 carrying=state.current_task_id is not None,
@@ -1054,7 +1071,13 @@ class SimulationRuntime:
                 continue
             task = self.tasks.get(state.current_task_id) if state.current_task_id else None
             decision = self.battery.assess(
-                self._contract_of(state), task, index=self.index, now_s=self.simulation_time_s
+                state.robot_id,
+                state.battery_percent,
+                state.status,
+                state.position,
+                task,
+                index=self.index,
+                now_s=self.simulation_time_s,
             )
             if decision is None:
                 continue
@@ -1076,15 +1099,14 @@ class SimulationRuntime:
         """Route a low-energy robot to a pad and hand its task back."""
 
         task = self.tasks.get(state.current_task_id) if state.current_task_id else None
-        if task is not None and self.controller_available:
+        if task is not None:
+            # Hand the work back before leaving for the pad, so the mission
+            # keeps making progress while this robot is off the floor.
             self._reassign(task, state.robot_id, "battery below the reserve")
-        elif task is not None:
-            self._release_task(state, reason="battery below the reserve")
-            self.tasks[task.task_id] = task.model_copy(update={"status": TaskStatus.PENDING})
 
         if state.charge_target_cell is None:
             charger = self.battery.pick_charger(
-                state.to_contract(),
+                state.position,
                 self.index,
                 reserved=frozenset(
                     Cell(*cell) for cell in (
@@ -1102,7 +1124,8 @@ class SimulationRuntime:
         self._emit(
             RecoveryStartedPayload(
                 action=self.battery.build_return_action(
-                    state.to_contract(),
+                    state.robot_id,
+                    state.battery_percent,
                     (destination.x, destination.y),
                     now_s=self.simulation_time_s,
                 )
@@ -1292,7 +1315,13 @@ class SimulationRuntime:
     # task lifecycle
     # ------------------------------------------------------------------
     def _reassign(self, task: Task, previous_robot_id: str, reason: str) -> None:
-        """Move a task to the best remaining candidate robot."""
+        """Move a task to the best remaining candidate robot.
+
+        Works with or without the coordinator: with it, the migration runs
+        through the same peer negotiation as a fresh assignment; without it, the
+        remaining robots claim the work locally. Either way the task does not
+        stall just because the service is down.
+        """
 
         previous = self.robots.get(previous_robot_id)
         if previous is not None:
@@ -1303,10 +1332,14 @@ class SimulationRuntime:
                 previous.status = RobotStatus.IDLE
             self.routes.pop(previous_robot_id, None)
             self.occupancy.clear_robot(previous_robot_id)
-        self.tasks[task.task_id] = task.model_copy(
+        recovering = task.model_copy(
             update={"status": TaskStatus.RECOVERY, "assigned_robot_id": None}
         )
-        self._negotiate_and_assign(Task(**self.tasks[task.task_id].model_dump(mode="python")))
+        self.tasks[task.task_id] = recovering
+        if self.controller_available:
+            self._negotiate_and_assign(recovering)
+        else:
+            self._locally_claim(recovering)
 
         new_robot_id = self.tasks[task.task_id].assigned_robot_id
         if new_robot_id is None:
@@ -1341,22 +1374,6 @@ class SimulationRuntime:
     def _task_priority(self, state: RobotState) -> int:
         task = self.tasks.get(state.current_task_id) if state.current_task_id else None
         return task.priority if task else 1
-
-    def _contract_of(self, state: RobotState) -> Robot:
-        """Return this tick's cached contract, rebuilding it if state moved on.
-
-        The per-tick cache is built once and shared, but the energy step
-        mutates battery levels after the cache exists, so a stale entry is
-        refreshed rather than reused. Anything else that mutates a robot does so
-        before the cache is built.
-        """
-
-        cached = self._robots_by_id.get(state.robot_id)
-        if cached is not None and abs(cached.battery_percent - state.battery_percent) < 1e-9:
-            return cached
-        fresh = state.to_contract()
-        self._robots_by_id[state.robot_id] = fresh
-        return fresh
 
     def _append(self, event: EventEnvelope[EventPayload]) -> None:
         """Append an event produced elsewhere, keeping the sequence monotonic.
