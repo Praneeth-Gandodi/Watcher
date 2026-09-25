@@ -253,6 +253,12 @@ export default function FleetMap({
     context.clearRect(0, 0, viewport.width, viewport.height);
     if (!layers.routes) return;
 
+    // Every active robot contributes a route, so at fleet scale these are drawn
+    // as a faint flow field rather than as individual lines. At full strength
+    // 400-odd polylines bury the floor they are supposed to explain; the route
+    // that matters is the selected one, and it is drawn separately, on top.
+    context.globalAlpha = 0.16;
+    context.lineWidth = 1;
     for (const route of snapshot.routes) {
       if (route.waypoints.length < 2) continue;
       context.beginPath();
@@ -262,9 +268,9 @@ export default function FleetMap({
         else context.lineTo(point.x, point.y);
       });
       context.strokeStyle = routeColor(route, palette);
-      context.lineWidth = route.status === "blocked" ? 2.4 : 1.4;
       context.stroke();
     }
+    context.globalAlpha = 1;
   }, [snapshot, viewport, camera, palette, layers.routes]);
 
   // Rebuild the cached layers when their inputs change.
@@ -304,6 +310,18 @@ export default function FleetMap({
       const pulses: Map<string, number> = reducedMotionRef.current
         ? new Map()
         : pulsePhases(snapshot.robots);
+
+      // The routes worth reading are the ones the operator is looking at, so
+      // they are drawn last, at full strength, over the flow field.
+      if (layers.routes) {
+        drawFocusedRoutes(
+          context,
+          snapshot.routes,
+          [selectedRobotId, hoveredRobotId],
+          transform,
+          palette,
+        );
+      }
 
       for (const robot of snapshot.robots) {
         const point = worldToScreen(robot.position, transform);
@@ -685,6 +703,51 @@ function drawRobot(
   }
 
   context.restore();
+}
+
+function drawFocusedRoutes(
+  context: CanvasRenderingContext2D,
+  routes: readonly RoutePlan[],
+  robotIds: readonly (string | null)[],
+  transform: ReturnType<typeof getWorldTransform>,
+  palette: ReturnType<typeof readPalette>,
+): void {
+  // Trace the routes of one or two robots at full strength.
+  //
+  // The rest of the fleet is drawn as a faint flow field underneath. This is the
+  // detail-on-demand half: when an operator selects a robot, its path is the one
+  // line on the map that needs to be legible.
+
+  for (const robotId of robotIds) {
+    if (!robotId) continue;
+    const route = routes.find((candidate) => candidate.robot_id === robotId);
+    if (!route || route.waypoints.length < 2) continue;
+
+    context.save();
+    context.beginPath();
+    route.waypoints.forEach((waypoint, index) => {
+      const point = worldToScreen(waypoint, transform);
+      if (index === 0) context.moveTo(point.x, point.y);
+      else context.lineTo(point.x, point.y);
+    });
+    context.strokeStyle = routeColor(route, palette);
+    context.lineWidth = 2.2;
+    context.lineJoin = "round";
+    context.shadowColor = palette.floor;
+    context.shadowBlur = 4;
+    context.stroke();
+    context.restore();
+
+    // Mark the destination so the end of the route is unambiguous.
+    const end = worldToScreen(route.waypoints[route.waypoints.length - 1], transform);
+    context.beginPath();
+    context.arc(end.x, end.y, 4, 0, Math.PI * 2);
+    context.fillStyle = routeColor(route, palette);
+    context.fill();
+    context.lineWidth = 1.5;
+    context.strokeStyle = palette.floor;
+    context.stroke();
+  }
 }
 
 function drawSelectedLabel(

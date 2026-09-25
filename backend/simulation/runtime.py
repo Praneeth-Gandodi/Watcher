@@ -655,10 +655,16 @@ class SimulationRuntime:
             if state.status in SETTLED_STATUSES and self.failures.is_settled(
                 state.robot_id, state.battery_percent
             ):
-                # Nothing about this robot can have changed: no injected fault,
-                # no silence window, energy left, and it is not sitting in a
-                # failure state waiting to be revived. Skipping here is what
+                # Nothing about this robot's health can have changed: no injected
+                # fault, no silence window, energy left, and it is not sitting in
+                # a failure state waiting to be revived. Skipping the verdict
                 # keeps the health stage under a millisecond at 500 robots.
+                #
+                # The timestamp is still refreshed. `last_updated_at_s` is what
+                # the console shows as "updated", and a robot that skipped it
+                # would report the moment it was created rather than the last
+                # time it was actually seen.
+                state.last_updated_at_s = self.simulation_time_s
                 continue
             previous_status = state.status
             previous_communication = state.communication_state

@@ -146,6 +146,25 @@ class TestTick:
         assert [e.event_id for e in first.events] == [e.event_id for e in second.events]
         assert first.snapshot().robots == second.snapshot().robots
 
+    def test_every_robot_reports_when_it_was_last_seen(self) -> None:
+        """`last_updated_at_s` must advance even on the health fast path.
+
+        The health step skips settled robots to stay cheap, and a timestamp left
+        behind by that skip would make a robot report the moment it was created
+        rather than the last time it was actually observed.
+        """
+
+        runtime = build_runtime()
+        runtime.run_ticks(20)
+        at_twenty = runtime.snapshot().simulation_time_s
+        for robot in runtime.snapshot().robots:
+            assert robot.last_updated_at_s == pytest.approx(at_twenty)
+
+        runtime.run_ticks(10)
+        at_thirty = runtime.snapshot().simulation_time_s
+        for robot in runtime.snapshot().robots:
+            assert robot.last_updated_at_s == pytest.approx(at_thirty)
+
     def test_notifies_listeners_on_every_tick(self) -> None:
         runtime = build_runtime()
         calls: list[int] = []
@@ -157,7 +176,24 @@ class TestTick:
         runtime = build_runtime()
         runtime.run_ticks(5)
         cursor = runtime.snapshot().last_event_sequence
-        runtime.run_ticks(3)
+        # Ticking a busy, quiet fleet publishes nothing, so drive real work
+        # rather than assuming every tick produces an event.
+        runtime.apply_command(
+            CreateTaskCommand(
+                command_id=UUID(int=91),
+                issued_at_s=runtime.simulation_time_s,
+                task=Task(
+                    task_id="task-events-01",
+                    target=Position2D(x=30.0, y=30.0),
+                    priority=3,
+                    required_capabilities=("transport",),
+                    estimated_duration_s=20.0,
+                    status=TaskStatus.PENDING,
+                    assigned_robot_id=None,
+                    created_at_s=round(runtime.simulation_time_s, 3),
+                ),
+            )
+        )
         newer = runtime.events_after(cursor)
         assert newer
         assert all(event.sequence > cursor for event in newer)
