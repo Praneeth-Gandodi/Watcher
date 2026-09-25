@@ -49,7 +49,23 @@ Implement:
 9. Loading, disconnected, stale, empty, and error states
 10. Efficient rendering for 500+ robots
 
-Use React for panels and controls. Use Canvas for the high-volume grid/robot layer; do not create 500 separate DOM elements for robots. Batch WebSocket events and draw on animation frames.
+## Visual direction — professional operations product
+
+The default `/` route must be the live fleet operations dashboard, not a marketing landing page. This is an industrial control surface for evaluators and operators, not a decorative AI-generated showcase.
+
+Design constraints:
+
+- Do not use a purple/violet-dominant palette, purple gradients, neon glow effects, generic glassmorphism, or excessive bloom.
+- Use a restrained industrial palette: deep navy/slate surfaces, blue/cyan for active coordination, green for healthy/nominal, amber for warnings, red for critical failures, and neutral gray for inactive/unknown state.
+- Define semantic color, spacing, typography, radius, and status tokens in CSS; avoid scattered raw colors and arbitrary gradients.
+- Use a clear operational hierarchy: fleet map first, robot/task details second, metrics and event stream alongside or below it.
+- Keep the interface information-dense but readable. Use compact panels, aligned data, tabular figures for IDs/metrics, and strong empty/loading/error states.
+- Use neutral professional typography such as the system sans stack or a restrained UI font. Use monospace only for IDs, coordinates, and telemetry values.
+- Use animation only to communicate state changes, event updates, or spatial continuity. Respect `prefers-reduced-motion`; do not animate purely for decoration.
+- Never use fabricated robot counts, live-looking telemetry, or simulated backend values as if they came from the API. Development fixtures must be visibly labeled and must not be used as production behavior.
+- If a marketing/demo page is added, keep it separate from `/`, label concept simulations clearly, and do not let it replace the operations dashboard.
+
+The result should look like a credible industrial operations product: calm, precise, legible, and information-first—not a purple AI SaaS landing page.
 
 ## Inputs and outputs
 
