@@ -6,8 +6,8 @@ from collections.abc import Callable, Sequence
 
 from backend.app.composition import FleetCoordinator, build_coordinator
 from backend.contracts.models import RobotCapability, Task, TaskStatus
-from backend.simulation.grid import Cell, cell_to_world_position
-from backend.simulation.world import FleetBlueprint, make_robot
+from backend.simulation.grid import Cell, GridIndex, cell_to_world_position
+from backend.simulation.world import FleetBlueprint, free_start_cells, make_robot
 from tests.unit.safety.conftest import (
     build_registry,
     wall_column_obstacles,
@@ -124,29 +124,58 @@ def five_robot_blueprint() -> FleetBlueprint:
     )
 
 
-def ten_robot_blueprint() -> FleetBlueprint:
-    """Ten canonical robot IDs with mixed sizes, four speeds, and a wall."""
+#: The stress world: 16x12 with a single-cell neck at (8, 5) on a 16-wide wall.
+#: Ten robots with bodies up to 2x2 need room to resolve conflicts, so the
+#: stress world is larger than the five-robot demo world on purpose.
+STRESS_COLUMNS = 16
+STRESS_ROWS = 12
+STRESS_NECK = (8, 5)
+STRESS_OBSTACLES: tuple[Cell, ...] = tuple(
+    (STRESS_NECK[0], row) for row in range(STRESS_ROWS) if row != STRESS_NECK[1]
+)
 
-    sizes = [(1, 1), (2, 2), (1, 2), (2, 1), (3, 2)]
+#: The two robots that win the conflicting tasks, and where they start.
+STRESS_CONFLICT_STARTS = ((7, 5), (4, 5))
+
+
+def ten_robot_blueprint() -> FleetBlueprint:
+    """Ten canonical robot IDs with four body shapes, four speeds, and a neck.
+
+    Start cells come from the world's own footprint-aware placement, so every
+    body fits where it is put even though the sizes cycle through
+    1x1, 2x2, 1x2, and 2x1. ``robot-001`` and ``robot-002`` are the two that win
+    the conflicting tasks: they are 1x1, they are the only ones that can use the
+    single-cell neck, and at very different speeds their arrivals overlap.
+    """
+
+    sizes = [(1, 1), (2, 2), (1, 2), (2, 1)]
     speeds = [0.5, 1.0, 1.5, 2.0]
-    start_cells: tuple[Cell, ...] = (
-        (0, 1), (1, 3), (2, 5), (0, 7),
-        (7, 1), (8, 3), (7, 5), (8, 7),
-        (3, 0), (4, 6),
+    world = world_with_obstacles(
+        STRESS_COLUMNS, STRESS_ROWS, STRESS_OBSTACLES
     )
+    index = GridIndex(world)
+    profiles = build_registry(
+        [
+            (
+                f"robot-{offset + 1:03d}",
+                sizes[offset % len(sizes)][0],
+                sizes[offset % len(sizes)][1],
+                speeds[offset % len(speeds)],
+            )
+            for offset in range(10)
+        ]
+    )
+    # The first two robots are the 1x1 pair that collides at the neck; the rest
+    # are placed by the world's own deterministic footprint-aware search.
+    for cell in STRESS_CONFLICT_STARTS:
+        assert index.footprint_is_free(cell, 1, 1), f"{cell} must be free for the pair"
+    rest = free_start_cells(
+        index, 10, [(profile.width_cells, profile.height_cells) for profile in profiles]
+    )
+    start_cells = STRESS_CONFLICT_STARTS + rest[2:]
     return FleetBlueprint(
-        world=world_with_obstacles(10, 8, NECK_OBSTACLES),
-        profiles=build_registry(
-            [
-                (
-                    f"robot-{offset + 1:03d}",
-                    sizes[offset % len(sizes)][0],
-                    sizes[offset % len(sizes)][1],
-                    speeds[offset % len(speeds)],
-                )
-                for offset in range(10)
-            ]
-        ),
+        world=world,
+        profiles=profiles,
         robots=tuple(
             make_robot(
                 f"robot-{offset + 1:03d}",
@@ -196,6 +225,8 @@ def coordinator_for(blueprint: FleetBlueprint, **kwargs) -> FleetCoordinator:
 
 __all__ = [
     "NECK_OBSTACLES",
+    "STRESS_OBSTACLES",
+    "assert_world_invariants",
     "coordinator_for",
     "crossing_blueprint",
     "five_robot_blueprint",

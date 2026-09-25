@@ -34,6 +34,7 @@ __all__ = [
     "build_obstacle_cells",
     "build_workstation_cells",
     "build_world",
+    "free_start_cells",
     "make_robot",
     "robot_id_for",
 ]
@@ -227,16 +228,20 @@ class FleetBlueprint:
         )
 
 
-def _free_start_cells(
+def free_start_cells(
     index: GridIndex,
     count: int,
     footprints: Sequence[tuple[int, int]],
 ) -> tuple[Cell, ...]:
     """Return ``count`` deterministically spaced, non-overlapping start cells.
 
-    Footprint-aware: a 3x2 robot is only placed where all six of its cells fit
-    inside the world and clear of obstacles, and no two robots start on top of
-    each other.
+    Footprint-aware: each robot is only placed where its whole body fits inside
+    the world and clear of obstacles, and no two robots start on top of each
+    other. ``footprints`` is ordered by robot, so slot *i* is validated against
+    the body that will actually occupy it.
+
+    Raises ``ValueError`` when the world is too small for the requested fleet,
+    rather than silently placing a robot outside the grid.
     """
 
     if count < 1:
@@ -336,7 +341,7 @@ def build_fleet(
     footprints = [
         (profile.width_cells, profile.height_cells) for profile in profiles
     ]
-    start_cells = _free_start_cells(index, robot_count, footprints)
+    start_cells = free_start_cells(index, robot_count, footprints)
 
     robots: list[Robot] = []
     for offset, profile in enumerate(profiles):

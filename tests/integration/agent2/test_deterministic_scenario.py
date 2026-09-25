@@ -34,7 +34,6 @@ from backend.contracts.events import (
     CommunicationLostPayload,
     EventType,
     RobotFailedPayload,
-    TaskAssignedPayload,
     TaskReassignedPayload,
 )
 from backend.contracts.models import (

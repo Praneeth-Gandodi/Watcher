@@ -565,6 +565,7 @@ class SimulationRuntime:
         self._conflicts: dict[str, Conflict] = {}
         self._battery_notified: dict[str, str] = {}
         self._reported_deadlocks: set[str] = set()
+        self._open_conflict_by_pair: dict[tuple[str, str], str] = {}
         self._allocation_latencies_ms: list[float] = []
         self._task_reassignments = 0
         self._detected_deadlocks = 0
@@ -1409,23 +1410,43 @@ class SimulationRuntime:
         )
 
     def record_conflict(self, conflict: FleetConflict, detected_at_s: float) -> Conflict:
-        """Create or reuse the canonical ``Conflict`` record for a conflict."""
+        """Create or update the canonical ``Conflict`` record for a pair.
+
+        A pair holds at most one *open* conflict record. Safety is re-evaluated
+        whenever a trajectory changes, and every delay shifts the timestamps, so
+        keying on the conflict time would create a new record on every pass and
+        make ``open_conflicts`` grow without bound. The existing record is
+        refreshed instead, which keeps the metric an accurate count of genuinely
+        stuck pairs.
+        """
+
+        pair = (min(conflict.robot1, conflict.robot2), max(conflict.robot1, conflict.robot2))
+        open_id = self._open_conflict_by_pair.get(pair)
+        if open_id is not None and open_id in self._conflicts:
+            existing = self._conflicts[open_id]
+            refreshed = existing.model_copy(
+                update={
+                    "position": self._conflict_position(conflict),
+                    "task_ids": self._task_ids_for(conflict.involved_robot_ids),
+                    "detected_at_s": detected_at_s,
+                }
+            )
+            self._conflicts[open_id] = refreshed
+            return refreshed
 
         conflict_id = self.conflict_id_for(conflict)
-        existing = self._conflicts.get(conflict_id)
-        if existing is not None:
-            return existing
         record = Conflict(
             conflict_id=conflict_id,
             kind=ConflictKind.RIGHT_OF_WAY,
             severity=ConflictSeverity.WARNING,
-            robot_ids=tuple(sorted(conflict.involved_robot_ids)),
+            robot_ids=pair,
             task_ids=self._task_ids_for(conflict.involved_robot_ids),
             position=self._conflict_position(conflict),
             status=ResolutionStatus.OPEN,
             detected_at_s=detected_at_s,
         )
         self._conflicts[conflict_id] = record
+        self._open_conflict_by_pair[pair] = conflict_id
         return record
 
     def _task_ids_for(self, robot_ids: Sequence[str]) -> tuple[str, ...]:
@@ -1449,6 +1470,12 @@ class SimulationRuntime:
         self._conflicts[record.conflict_id] = stored.model_copy(
             update={"status": ResolutionStatus.RESOLVED}
         )
+        pair = (
+            min(record.robot_ids),
+            max(record.robot_ids),
+        )
+        if self._open_conflict_by_pair.get(pair) == record.conflict_id:
+            del self._open_conflict_by_pair[pair]
         for robot_id in record.robot_ids:
             state = self._require_state(robot_id)
             if state.blocked_since_s is not None:
@@ -1697,6 +1724,7 @@ class SimulationRuntime:
         }
         self._tasks.clear()
         self._conflicts.clear()
+        self._open_conflict_by_pair.clear()
         self._battery_notified.clear()
         self._reported_deadlocks.clear()
         self._allocation_latencies_ms.clear()
