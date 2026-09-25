@@ -1,8 +1,9 @@
+import { parseEvent, parseEvents, parseHealth, parseSnapshot } from "./validation";
 import type { ControlCommand, DomainEvent, SimulationSnapshot } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function requestJson(path: string, init?: RequestInit): Promise<unknown> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
@@ -16,23 +17,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(`API ${response.status}: ${response.statusText || "request failed"}`);
   }
 
-  return (await response.json()) as T;
+  return response.json();
 }
 
 export function getHealth(): Promise<{ status: string; service: string; version: string }> {
-  return request("/health");
+  return requestJson("/health").then(parseHealth);
 }
 
 export function getSnapshot(): Promise<SimulationSnapshot> {
-  return request("/snapshot");
+  return requestJson("/snapshot").then(parseSnapshot);
 }
 
 export function getEvents(afterSequence = 0): Promise<DomainEvent[]> {
-  return request(`/events?after_sequence=${afterSequence}`);
+  return requestJson(`/events?after_sequence=${afterSequence}`).then(parseEvents);
 }
 
 export function sendCommand(command: ControlCommand): Promise<unknown> {
-  return request("/commands", { method: "POST", body: JSON.stringify(command) });
+  return requestJson("/commands", { method: "POST", body: JSON.stringify(command) });
 }
 
 export function connectToEvents(
@@ -52,10 +53,11 @@ export function connectToEvents(
 
   const socket = new WebSocket(url.toString());
   socket.addEventListener("open", onOpen);
-  socket.addEventListener("message", (message) => {
+  socket.addEventListener("message", (message: MessageEvent<unknown>) => {
     try {
-      const event = JSON.parse(String(message.data)) as DomainEvent;
-      if (event.event_id && event.sequence > afterSequence) onEvent(event);
+      const rawEvent = typeof message.data === "string" ? JSON.parse(message.data) : message.data;
+      const event = parseEvent(rawEvent);
+      if (event.sequence > afterSequence) onEvent(event);
     } catch {
       onError();
     }
