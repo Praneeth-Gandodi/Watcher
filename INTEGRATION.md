@@ -20,6 +20,10 @@ Subsystems communicate through contracts and protocol interfaces, not private im
 5. Reviewers check boundary compliance and run the complete suite.
 6. Merge focused PRs, then run the A–H scenarios and record evidence in `docs/integrations/`.
 
+## Merge review rule
+
+Integration review is a full-code review, not a summary review. Read every changed line, inspect related implementations and tests, verify ownership and contracts, and run relevant checks. Do not merge a PR that is wrong, unrelated, risky, duplicated, or likely to cause integration issues. If review is incomplete or findings are unresolved, leave the PR open and document the blockers.
+
 ## Failure and controller outage
 
 The runtime must represent coordination availability separately from robot execution. If coordination fails, local safety and existing work continue; communication loss triggers timeout handling and work recovery. Do not use the dashboard or API as a hidden decision-maker.
