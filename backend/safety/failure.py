@@ -34,13 +34,14 @@ __all__ = [
     "evolve_robot",
     "fail_robot",
     "failure_payload",
+    "index_by_robot_id",
     "is_communicating",
-    "is_coordinating",
     "is_failed",
     "is_ignored_by_safety",
+    "is_mobile",
     "mark_communication_lost",
-    "restore_robot",
     "restore_communication",
+    "restore_robot",
 ]
 
 #: Statuses a robot may hold while it is still physically able to move.
