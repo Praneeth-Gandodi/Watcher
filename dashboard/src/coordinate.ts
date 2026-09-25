@@ -1,4 +1,4 @@
-import type { Position2D, WorldState } from "./types";
+import type { Position2D, Robot, WorldState } from "./types";
 
 export interface Camera {
   zoom: number;
@@ -48,4 +48,19 @@ export function screenToWorld(
     x: (position.x - transform.originX) / transform.scale,
     y: (transform.originY - position.y) / transform.scale,
   };
+}
+
+export function findRobotAtScreenPosition(
+  robots: Robot[],
+  pointer: Position2D,
+  world: WorldState,
+  viewport: Viewport,
+  camera: Camera,
+  hitRadius = 16,
+): Robot | null {
+  const transform = getWorldTransform(world, viewport, camera);
+  return robots.find((robot) => {
+    const point = worldToScreen(robot.position, transform);
+    return Math.hypot(point.x - pointer.x, point.y - pointer.y) <= hitRadius;
+  }) ?? null;
 }

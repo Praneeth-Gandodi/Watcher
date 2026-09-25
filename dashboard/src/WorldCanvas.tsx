@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { getWorldTransform, worldToScreen, type Camera } from "./coordinate";
-import type { DomainEvent, Robot, SimulationSnapshot } from "./types";
+import { findRobotAtScreenPosition, getWorldTransform, worldToScreen, type Camera } from "./coordinate";
+import type { DeadlockCycle } from "./state";
+import type { Robot, SimulationSnapshot } from "./types";
 
 interface WorldCanvasProps {
   snapshot: SimulationSnapshot | null;
-  events: DomainEvent[];
+  deadlockCycles: DeadlockCycle[];
   selectedRobotId: string | null;
   onSelectRobot: (robotId: string) => void;
 }
@@ -88,23 +89,15 @@ function drawRobotMarker(
   context.restore();
 }
 
-function getDeadlockRobotIds(events: DomainEvent[]): string[][] {
-  return events.flatMap((event) => {
-    if (event.event_type !== "DEADLOCK_DETECTED") return [];
-    const report = event.payload.report as { cycle_robot_ids?: unknown } | undefined;
-    if (!report || !Array.isArray(report.cycle_robot_ids)) return [];
-    return [report.cycle_robot_ids.filter((id): id is string => typeof id === "string")];
-  });
-}
-
 export default function WorldCanvas({
   snapshot,
-  events,
+  deadlockCycles,
   selectedRobotId,
   onSelectRobot,
 }: WorldCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
+  const drawFrameRef = useRef<number | undefined>(undefined);
   const dragRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const [viewport, setViewport] = useState<ViewportSize>({ width: 0, height: 0 });
   const [camera, setCamera] = useState<Camera>({ zoom: 1, offsetX: 0, offsetY: 0 });
@@ -119,15 +112,14 @@ export default function WorldCanvas({
     return () => observer.disconnect();
   }, []);
 
-  const deadlockCycles = useMemo(() => getDeadlockRobotIds(events), [events]);
-
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || viewport.width === 0 || viewport.height === 0) return;
     const context = canvas.getContext("2d");
     if (!context) return;
 
-    const ratio = window.devicePixelRatio || 1;
+    const draw = () => {
+      const ratio = window.devicePixelRatio || 1;
     canvas.width = viewport.width * ratio;
     canvas.height = viewport.height * ratio;
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -241,7 +233,7 @@ export default function WorldCanvas({
 
     const robotById = new Map(snapshot.robots.map((robot) => [robot.robot_id, robot]));
     for (const cycle of deadlockCycles) {
-      const points = cycle
+      const points = cycle.robotIds
         .map((id) => robotById.get(id))
         .filter((robot): robot is Robot => Boolean(robot))
         .map((robot) => worldToScreen(robot.position, transform));
@@ -259,21 +251,28 @@ export default function WorldCanvas({
       context.setLineDash([]);
     }
 
-    for (const robot of snapshot.robots) {
-      const point = worldToScreen(robot.position, transform);
-      drawRobotMarker(context, robot, point, robot.robot_id === selectedRobotId, transform.scale);
-    }
-  }, [camera, deadlockCycles, events, selectedRobotId, snapshot, viewport]);
+      for (const robot of snapshot.robots) {
+        const point = worldToScreen(robot.position, transform);
+        drawRobotMarker(context, robot, point, robot.robot_id === selectedRobotId, transform.scale);
+      }
+    };
+
+    if (drawFrameRef.current !== undefined) cancelAnimationFrame(drawFrameRef.current);
+    drawFrameRef.current = requestAnimationFrame(() => {
+      drawFrameRef.current = undefined;
+      draw();
+    });
+    return () => {
+      if (drawFrameRef.current !== undefined) cancelAnimationFrame(drawFrameRef.current);
+      drawFrameRef.current = undefined;
+    };
+  }, [camera, deadlockCycles, selectedRobotId, snapshot, viewport]);
 
   function selectAt(event: ReactPointerEvent<HTMLCanvasElement>): void {
     if (!snapshot || viewport.width === 0) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-    const transform = getWorldTransform(snapshot.world, viewport, camera);
-    const robot = snapshot.robots.find((candidate) => {
-      const point = worldToScreen(candidate.position, transform);
-      return Math.hypot(point.x - pointer.x, point.y - pointer.y) <= 16;
-    });
+    const robot = findRobotAtScreenPosition(snapshot.robots, pointer, snapshot.world, viewport, camera);
     if (robot) onSelectRobot(robot.robot_id);
   }
 

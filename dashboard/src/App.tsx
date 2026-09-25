@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -29,6 +30,16 @@ import {
   sendCommand,
 } from "./api";
 import WorldCanvas from "./WorldCanvas";
+import {
+  applyEventToDeadlockCycles,
+  buildCreateTaskCommand,
+  createDebouncedSnapshotRefresher,
+  getActiveDeadlockCycles,
+  getRuntimeSpeedMultiplier,
+  mergeEvents,
+  type CreateTaskInput,
+  type DeadlockCycle,
+} from "./state";
 import type { ControlCommand, DomainEvent, Robot, SimulationSnapshot } from "./types";
 
 type ConnectionState = "connecting" | "live" | "stale" | "offline";
@@ -88,20 +99,84 @@ function App() {
   const [selectedRobotId, setSelectedRobotId] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [commandMessage, setCommandMessage] = useState<string | null>(null);
+  const [commandState, setCommandState] = useState<"idle" | "sending" | "success" | "error">("idle");
   const [isCommandBusy, setIsCommandBusy] = useState(false);
+  const [speedMultiplier, setSpeedMultiplier] = useState(1);
+  const [activeDeadlocks, setActiveDeadlocks] = useState<DeadlockCycle[]>([]);
+  const [taskDraft, setTaskDraft] = useState<CreateTaskInput>({
+    taskId: "",
+    targetX: 0,
+    targetY: 0,
+    priority: 3,
+    capability: "transport",
+    estimatedDurationS: 60,
+  });
+  const [taskFormError, setTaskFormError] = useState<string | null>(null);
+  const speedInitializedRef = useRef(false);
+  const eventQueueRef = useRef<DomainEvent[]>([]);
+  const eventFrameRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     let disposed = false;
     let socket: WebSocket | undefined;
     let reconnectTimer: number | undefined;
+    let refreshInFlight = false;
+    let refreshQueued = false;
+    let hasSnapshot = false;
+
+    const refreshSnapshot = async () => {
+      if (disposed) return;
+      if (refreshInFlight) {
+        refreshQueued = true;
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        const nextSnapshot = await getSnapshot();
+        if (disposed) return;
+        hasSnapshot = true;
+        setSnapshot(nextSnapshot);
+        setLastSync(new Date());
+        setError(null);
+        setConnection("live");
+      } catch (refreshError) {
+        if (disposed) return;
+        setConnection(hasSnapshot ? "stale" : "offline");
+        setError(refreshError instanceof Error ? refreshError.message : "The runtime snapshot refresh failed.");
+      } finally {
+        refreshInFlight = false;
+        if (refreshQueued && !disposed) {
+          refreshQueued = false;
+          void refreshSnapshot();
+        }
+      }
+    };
+
+    const refresher = createDebouncedSnapshotRefresher(refreshSnapshot, 150);
+    const flushEventQueue = () => {
+      const batch = eventQueueRef.current.splice(0);
+      eventFrameRef.current = undefined;
+      if (batch.length === 0) return;
+      setEvents((current) => mergeEvents(current, batch));
+      setActiveDeadlocks((current) => batch.reduce(applyEventToDeadlockCycles, current));
+    };
+    const enqueueEvent = (event: DomainEvent) => {
+      eventQueueRef.current.push(event);
+      if (eventFrameRef.current === undefined) eventFrameRef.current = window.requestAnimationFrame(flushEventQueue);
+      setConnection("live");
+      setLastSync(new Date());
+      refresher.schedule();
+    };
 
     const loadDashboard = async () => {
       if (disposed) return;
-      setConnection("connecting");
+      setConnection(hasSnapshot ? "stale" : "connecting");
       try {
         await getHealth();
         const nextSnapshot = await getSnapshot();
         if (disposed) return;
+        const hadSnapshot = hasSnapshot;
+        hasSnapshot = true;
         setSnapshot(nextSnapshot);
         setLastSync(new Date());
         setError(null);
@@ -111,19 +186,15 @@ function App() {
           const missedEvents = await getEvents(nextSnapshot.last_event_sequence);
           if (!disposed && missedEvents.length > 0) {
             setEvents((current) => mergeEvents(current, missedEvents));
+            if (!hadSnapshot) setActiveDeadlocks(getActiveDeadlockCycles(missedEvents));
           }
-        } catch {
-          // The event endpoint may lag behind the first snapshot; the stream remains authoritative.
+        } catch (eventsError) {
+          if (!disposed) setError(eventsError instanceof Error ? eventsError.message : "The event history could not be loaded.");
         }
 
         socket = connectToEvents(
           nextSnapshot.last_event_sequence,
-          (event) => {
-            if (disposed) return;
-            setEvents((current) => mergeEvents(current, [event]));
-            setConnection("live");
-            setLastSync(new Date());
-          },
+          enqueueEvent,
           () => {
             if (!disposed) setConnection("live");
           },
@@ -139,7 +210,7 @@ function App() {
         );
       } catch (loadError) {
         if (disposed) return;
-        setConnection("offline");
+        setConnection(hasSnapshot ? "stale" : "offline");
         setError(loadError instanceof Error ? loadError.message : "The runtime API is unavailable.");
         reconnectTimer = window.setTimeout(loadDashboard, 5000);
       }
@@ -148,10 +219,23 @@ function App() {
     void loadDashboard();
     return () => {
       disposed = true;
+      refresher.cancel();
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (eventFrameRef.current !== undefined) window.cancelAnimationFrame(eventFrameRef.current);
+      eventFrameRef.current = undefined;
+      eventQueueRef.current = [];
       socket?.close();
     };
   }, []);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    const runtimeSpeed = snapshot.metrics.extra_metrics.simulation_speed_multiplier;
+    if (!speedInitializedRef.current || typeof runtimeSpeed === "number") {
+      setSpeedMultiplier(getRuntimeSpeedMultiplier(snapshot));
+      speedInitializedRef.current = true;
+    }
+  }, [snapshot]);
 
   const selectedRobot = useMemo<Robot | null>(
     () => snapshot?.robots.find((robot) => robot.robot_id === selectedRobotId) ?? null,
@@ -162,14 +246,19 @@ function App() {
   const visibleRobots = snapshot?.robots.slice(0, 8) ?? [];
   const isPaused = snapshot?.metrics.extra_metrics.paused === 1;
 
-  async function issueCommand(command: ControlCommand): Promise<void> {
+  async function issueCommand(command: ControlCommand): Promise<boolean> {
     setIsCommandBusy(true);
+    setCommandState("sending");
     setCommandMessage("Sending command…");
     try {
       await sendCommand(command);
+      setCommandState("success");
       setCommandMessage("Command accepted by the command adapter.");
+      return true;
     } catch (commandError) {
-      setCommandMessage(commandError instanceof Error ? commandError.message : "Command was not sent.");
+      setCommandState("error");
+      setCommandMessage(`Command failed: ${commandError instanceof Error ? commandError.message : "request failed"}`);
+      return false;
     } finally {
       setIsCommandBusy(false);
     }
@@ -215,6 +304,28 @@ function App() {
       command_type: "RESTORE_ROBOT",
       robot_id: selectedRobot.robot_id,
     });
+  }
+
+  function updateTaskDraft<K extends keyof CreateTaskInput>(field: K, value: CreateTaskInput[K]): void {
+    setTaskDraft((current) => ({ ...current, [field]: value }));
+    setTaskFormError(null);
+  }
+
+  async function createTask(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    try {
+      const command = buildCreateTaskCommand(taskDraft, {
+        commandId: crypto.randomUUID(),
+        issuedAtS: snapshot?.simulation_time_s ?? 0,
+      });
+      const sent = await issueCommand(command);
+      if (sent) {
+        setTaskDraft({ taskId: "", targetX: 0, targetY: 0, priority: 3, capability: "transport", estimatedDurationS: 60 });
+        setTaskFormError(null);
+      }
+    } catch (taskError) {
+      setTaskFormError(taskError instanceof Error ? taskError.message : "Task could not be created.");
+    }
   }
 
   return (
@@ -276,11 +387,11 @@ function App() {
                 <h2 id="map-title">Fleet world</h2>
               </div>
               <div className="panel-heading-actions">
-                <span className={`status-chip ${snapshot?.controller_available ? "chip-healthy" : "chip-neutral"}`}><Signal size={13} />{snapshot?.controller_available ? "Controller available" : "Controller state unknown"}</span>
+                <span className={`status-chip ${snapshot ? (snapshot.controller_available ? "chip-healthy" : "chip-critical") : "chip-neutral"}`}><Signal size={13} />{snapshot ? (snapshot.controller_available ? "Controller available" : "Controller unavailable") : "Controller state unknown"}</span>
                 <span className="status-chip chip-muted"><SquareStack size={13} />{snapshot?.world.revision ?? "—"} map revision</span>
               </div>
             </div>
-            <WorldCanvas snapshot={snapshot} events={events} selectedRobotId={selectedRobotId} onSelectRobot={setSelectedRobotId} />
+            <WorldCanvas snapshot={snapshot} deadlockCycles={activeDeadlocks} selectedRobotId={selectedRobotId} onSelectRobot={setSelectedRobotId} />
           </section>
 
           <aside className="panel detail-panel" aria-labelledby="detail-title">
@@ -325,24 +436,32 @@ function App() {
           </section>
         </section>
 
+        <section className="panel create-task-panel" aria-labelledby="create-task-title">
+          <div className="panel-heading"><div><p className="section-kicker">Command adapter</p><h2 id="create-task-title">Create task</h2></div><span className="control-note"><Target size={14} />Canonical CREATE_TASK command</span></div>
+          <form className="task-form" onSubmit={createTask}>
+            <label>Task ID<input value={taskDraft.taskId} onChange={(event) => updateTaskDraft("taskId", event.target.value)} placeholder="task-001" pattern="[a-z][a-z0-9]*(?:-[a-z0-9]+)*" required /></label>
+            <label>Target X<input type="number" min="0" step="0.1" value={taskDraft.targetX} onChange={(event) => updateTaskDraft("targetX", Number(event.target.value))} required /></label>
+            <label>Target Y<input type="number" min="0" step="0.1" value={taskDraft.targetY} onChange={(event) => updateTaskDraft("targetY", Number(event.target.value))} required /></label>
+            <label>Priority<select value={taskDraft.priority} onChange={(event) => updateTaskDraft("priority", Number(event.target.value))}><option value="1">1 · Low</option><option value="2">2</option><option value="3">3 · Normal</option><option value="4">4</option><option value="5">5 · Critical</option></select></label>
+            <label>Capability<select value={taskDraft.capability} onChange={(event) => updateTaskDraft("capability", event.target.value as CreateTaskInput["capability"])}><option value="transport">Transport</option><option value="pick">Pick</option><option value="tug">Tug</option><option value="inspect">Inspect</option><option value="deliver">Deliver</option></select></label>
+            <label>Duration (s)<input type="number" min="0.1" step="0.1" value={taskDraft.estimatedDurationS} onChange={(event) => updateTaskDraft("estimatedDurationS", Number(event.target.value))} required /></label>
+            <button type="submit" className="button button-primary create-task-submit" disabled={!snapshot || isCommandBusy}><Send size={14} />Create task</button>
+            {taskFormError && <p className="form-error" role="alert">{taskFormError}</p>}
+          </form>
+        </section>
+
         <section className="panel controls-panel" aria-labelledby="controls-title">
-          <div className="panel-heading"><div><p className="section-kicker">Runtime command adapter</p><h2 id="controls-title">Simulation controls</h2></div><span className="control-note"><Wifi size={14} />Commands are validated server-side</span></div>
+          <div className="panel-heading"><div><p className="section-kicker">Runtime command adapter</p><h2 id="controls-title">Simulation controls</h2></div><span className="control-note"><Wifi size={14} />Controller availability is read-only; no outage command is defined</span></div>
           <div className="controls-row">
             <div className="control-group"><span className="control-label">Transport</span><div className="button-row"><button type="button" className="button button-secondary" onClick={() => void issueCommand({ ...commandBase(), command_type: isPaused ? "RESUME_SIMULATION" : "PAUSE_SIMULATION" })} disabled={!snapshot || isCommandBusy}>{isPaused ? <Play size={15} /> : <Pause size={15} />}{isPaused ? "Resume" : "Pause"}</button><button type="button" className="button button-secondary" onClick={() => void issueCommand({ ...commandBase(), command_type: "RESET_SIMULATION", seed: 42 })} disabled={!snapshot || isCommandBusy}><RotateCcw size={15} />Reset</button></div></div>
-            <label className="speed-control"><span className="control-label">Speed</span><select value="1" onChange={(event) => void issueCommand({ ...commandBase(), command_type: "SET_SIMULATION_SPEED", multiplier: Number(event.target.value) })} disabled={!snapshot || isCommandBusy}><option value="0.5">0.5×</option><option value="1">1.0×</option><option value="2">2.0×</option><option value="4">4.0×</option></select></label>
-            <div className="control-message" role="status" aria-live="polite">{commandMessage ?? "Ready for operator commands."}</div>
-            <button type="button" className="button button-primary control-send" onClick={() => setCommandMessage("Select a robot in the inspector to issue a targeted command.")}><Send size={15} />Target command</button>
+            <label className="speed-control"><span className="control-label">Speed</span><select value={String(speedMultiplier)} onChange={(event) => { const nextSpeed = Number(event.target.value); setSpeedMultiplier(nextSpeed); void issueCommand({ ...commandBase(), command_type: "SET_SIMULATION_SPEED", multiplier: nextSpeed }); }} disabled={!snapshot || isCommandBusy}><option value="0.5">0.5×</option><option value="1">1.0×</option><option value="2">2.0×</option><option value="4">4.0×</option></select></label>
+            <div className={`control-message control-message-${commandState}`} role="status" aria-live="polite">{commandMessage ?? "Ready for operator commands."}</div>
+            <button type="button" className="button button-primary control-send" onClick={() => { setCommandState("idle"); setCommandMessage("Select a robot in the inspector to issue a targeted command."); }}><Send size={15} />Target command</button>
           </div>
         </section>
       </main>
     </div>
   );
-}
-
-function mergeEvents(current: DomainEvent[], incoming: DomainEvent[]): DomainEvent[] {
-  const byId = new Map(current.map((event) => [event.event_id, event]));
-  incoming.forEach((event) => byId.set(event.event_id, event));
-  return [...byId.values()].sort((left, right) => left.sequence - right.sequence).slice(-200);
 }
 
 function MetricCard({ icon: Icon, label, value, detail, tone }: { icon: typeof Activity; label: string; value: string; detail: string; tone: string }) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getWorldTransform, screenToWorld, worldToScreen } from "./coordinate";
-import type { WorldState } from "./types";
+import { findRobotAtScreenPosition, getWorldTransform, screenToWorld, worldToScreen } from "./coordinate";
+import type { Robot, WorldState } from "./types";
 
 const world: WorldState = {
   width_m: 40,
@@ -40,5 +40,24 @@ describe("world coordinate conversion", () => {
 
     expect(center.x).toBeCloseTo(400);
     expect(center.y).toBeCloseTo(240);
+  });
+
+  it("selects the robot under the pointer", () => {
+    const robot: Robot = {
+      robot_id: "robot-001",
+      position: { x: 20, y: 12 },
+      battery_percent: 80,
+      capabilities: ["transport"],
+      workload: 0,
+      status: "idle",
+      current_task_id: null,
+      communication_state: "online",
+      failure: null,
+      last_updated_at_s: 0,
+    };
+    const camera = { zoom: 1, offsetX: 0, offsetY: 0 };
+    const transform = getWorldTransform(world, viewport, camera);
+    expect(findRobotAtScreenPosition([robot], worldToScreen(robot.position, transform), world, viewport, camera)?.robot_id).toBe("robot-001");
+    expect(findRobotAtScreenPosition([robot], { x: 10, y: 10 }, world, viewport, camera)).toBeNull();
   });
 });
