@@ -36,3 +36,6 @@ Thumbs.db
 *.sqlite3
 runtime/
 logs/
+
+# Tooling scratch
+.playwright-mcp/
