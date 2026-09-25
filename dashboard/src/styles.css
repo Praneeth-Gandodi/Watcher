@@ -1296,9 +1296,12 @@ input:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  /* The floor is wider than it is tall, so the map hugs that shape instead of
+     reserving a fixed height and leaving dead bands above and below the world. */
   .map {
-    min-height: 340px;
-    height: 52vh;
+    min-height: 0;
+    height: auto;
+    aspect-ratio: 5 / 3;
   }
 
   .roster__row,
@@ -1316,6 +1319,17 @@ input:disabled {
   }
 }
 
+  .map {
+    min-height: 0;
+    height: auto;
+    aspect-ratio: 5 / 3;
+  }
+
+  .inspector__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 520px) {
   .tiles {
     grid-template-columns: minmax(0, 1fr);
@@ -1330,13 +1344,15 @@ input:disabled {
     flex-wrap: wrap;
   }
 
-  .map__layers .chip {
-    flex: 1 1 auto;
-    justify-content: center;
+  /* There is room to wrap on a narrow screen, and wrapping beats clipping the
+     last two toggles out of sight. */
+  .map__toolbar {
+    flex-wrap: wrap;
   }
 
-  .inspector__grid {
-    grid-template-columns: minmax(0, 1fr);
+  .map__layers {
+    flex-wrap: wrap;
+    overflow-x: visible;
   }
 }
 
