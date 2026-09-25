@@ -15,10 +15,22 @@ export interface CreateTaskInput {
   estimatedDurationS: number;
 }
 
-export function mergeEvents(current: DomainEvent[], incoming: DomainEvent[]): DomainEvent[] {
+/**
+ * Merge incoming events into the log, de-duplicated by id and ordered by
+ * sequence, keeping only the most recent `limit` entries.
+ *
+ * The log is a view for the operator, not a durable store: the backend remains
+ * the system of record, and a client that has fallen behind recovers through a
+ * snapshot rather than by replaying everything it missed.
+ */
+export function mergeEvents(
+  current: DomainEvent[],
+  incoming: DomainEvent[],
+  limit = 400,
+): DomainEvent[] {
   const byId = new Map(current.map((event) => [event.event_id, event]));
   incoming.forEach((event) => byId.set(event.event_id, event));
-  return [...byId.values()].sort((left, right) => left.sequence - right.sequence).slice(-200);
+  return [...byId.values()].sort((left, right) => left.sequence - right.sequence).slice(-limit);
 }
 
 function payloadRecord(event: DomainEvent): Record<string, unknown> {

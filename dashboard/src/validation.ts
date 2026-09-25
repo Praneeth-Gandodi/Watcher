@@ -251,3 +251,44 @@ export function parseHealth(value: unknown): { status: string; service: string; 
   const record = asRecord(value, "health");
   return { status: asString(record.status, "health.status"), service: asString(record.service, "health.service"), version: asString(record.version, "health.version") };
 }
+
+export function parseMetrics(value: unknown): SystemMetrics {
+  return asMetrics(value, "metrics");
+}
+
+export function parseCommandAccepted(
+  value: unknown,
+): { command_id: string; command_type: string; accepted: boolean; last_event_sequence: number } {
+  const record = asRecord(value, "command acknowledgement");
+  return {
+    command_id: asString(record.command_id, "command.command_id"),
+    command_type: asString(record.command_type, "command.command_type"),
+    accepted: record.accepted === true,
+    last_event_sequence: asNonNegativeInteger(
+      record.last_event_sequence,
+      "command.last_event_sequence",
+    ),
+  };
+}
+
+export function parseEventsResponse(value: unknown): {
+  events: DomainEvent[];
+  last_event_sequence: number;
+} {
+  const record = asRecord(value, "events response");
+  return {
+    events: asArray(record.events, "events").map((event, index) => {
+      try {
+        return parseEvent(event);
+      } catch (error) {
+        throw new Error(
+          `events[${index}]: ${error instanceof Error ? error.message : "invalid event"}`,
+        );
+      }
+    }),
+    last_event_sequence: asNonNegativeInteger(
+      record.last_event_sequence,
+      "events.last_event_sequence",
+    ),
+  };
+}

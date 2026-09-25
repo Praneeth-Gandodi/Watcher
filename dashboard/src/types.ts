@@ -175,6 +175,11 @@ export interface DomainEvent {
   payload: Record<string, unknown>;
 }
 
+export type StreamFrame =
+  | { kind: "snapshot"; snapshot: SimulationSnapshot }
+  | { kind: "event"; event: DomainEvent }
+  | { kind: "cursor"; lastEventSequence: number };
+
 export type CommandType =
   | "CREATE_TASK"
   | "INJECT_ROBOT_FAILURE"

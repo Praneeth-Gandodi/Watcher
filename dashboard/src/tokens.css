@@ -1,0 +1,188 @@
+/* Hallmark · pre-emit critique: P4 H5 E4 S5 R5 V4
+ * genre: modern-minimal · macrostructure: 19 Map/Diagram · theme: custom (dual, industrial)
+ * nav: N3 side-rail · footer: none (an operations console has no footer)
+ *
+ * One token block, two themes. Every colour, space, radius, and font-family in
+ * the dashboard resolves through a name declared here — no inline OKLCH, no
+ * hex literals in components, no per-component improvisation.
+ *
+ * The dark theme is the default because an industrial control surface is read
+ * in a dim room and on a projector. The light theme is a first-class peer, not
+ * an afterthought, and every status colour was picked to hold contrast in both.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Dark — deep slate, the operations default                            */
+/* ------------------------------------------------------------------ */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --paper: oklch(15% 0.018 256);
+  --paper-sunken: oklch(12.5% 0.016 256);
+  --surface: oklch(19.5% 0.02 256);
+  --surface-2: oklch(23% 0.022 256);
+  --surface-3: oklch(27% 0.024 256);
+  --surface-inset: oklch(17% 0.018 256);
+
+  --rule: oklch(28% 0.022 256);
+  --rule-strong: oklch(36% 0.028 256);
+
+  --ink: oklch(96% 0.008 250);
+  --ink-2: oklch(79% 0.014 252);
+  --ink-3: oklch(62% 0.018 254);
+  --ink-4: oklch(50% 0.018 254);
+
+  --accent: oklch(74% 0.13 218);
+  --accent-strong: oklch(64% 0.16 232);
+  --accent-ink: oklch(16% 0.02 256);
+  --accent-wash: oklch(74% 0.13 218 / 0.14);
+
+  --ok: oklch(74% 0.15 162);
+  --ok-wash: oklch(74% 0.15 162 / 0.14);
+  --warn: oklch(80% 0.14 78);
+  --warn-wash: oklch(80% 0.14 78 / 0.15);
+  --crit: oklch(68% 0.18 18);
+  --crit-wash: oklch(68% 0.18 18 / 0.16);
+  --idle: oklch(60% 0.02 254);
+  --idle-wash: oklch(60% 0.02 254 / 0.12);
+
+  --map-floor: oklch(17% 0.016 256);
+  --map-grid: oklch(100% 0 0 / 0.05);
+  --map-boundary: oklch(48% 0.03 250);
+  --map-cell-obstacle: oklch(32% 0.018 256);
+  --map-cell-workstation: oklch(58% 0.11 78);
+  --map-cell-charging: oklch(56% 0.13 226);
+  --map-cell-resource: oklch(54% 0.09 168);
+  --map-cell-deadzone: oklch(46% 0.05 330);
+
+  --focus: oklch(80% 0.14 78);
+  --shadow-panel: 0 1px 2px oklch(0% 0 0 / 0.4);
+  --shadow-float: 0 12px 32px oklch(0% 0 0 / 0.45);
+}
+
+/* ------------------------------------------------------------------ */
+/* Light — the same instrument, in daylight                           */
+/* ------------------------------------------------------------------ */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --paper: oklch(97.5% 0.005 250);
+  --paper-sunken: oklch(94% 0.006 250);
+  --surface: oklch(100% 0 0);
+  --surface-2: oklch(98% 0.004 250);
+  --surface-3: oklch(95% 0.006 250);
+  --surface-inset: oklch(96.5% 0.005 250);
+
+  --rule: oklch(90% 0.008 252);
+  --rule-strong: oklch(80% 0.014 252);
+
+  --ink: oklch(24% 0.022 258);
+  --ink-2: oklch(40% 0.02 257);
+  --ink-3: oklch(52% 0.018 255);
+  --ink-4: oklch(64% 0.016 254);
+
+  --accent: oklch(50% 0.17 250);
+  --accent-strong: oklch(42% 0.18 252);
+  --accent-ink: oklch(100% 0 0);
+  --accent-wash: oklch(50% 0.17 250 / 0.1);
+
+  --ok: oklch(48% 0.13 162);
+  --ok-wash: oklch(48% 0.13 162 / 0.1);
+  --warn: oklch(52% 0.13 62);
+  --warn-wash: oklch(52% 0.13 62 / 0.12);
+  --crit: oklch(52% 0.19 22);
+  --crit-wash: oklch(52% 0.19 22 / 0.1);
+  --idle: oklch(62% 0.02 254);
+  --idle-wash: oklch(62% 0.02 254 / 0.1);
+
+  --map-floor: oklch(98.5% 0.003 250);
+  --map-grid: oklch(20% 0.02 258 / 0.07);
+  --map-boundary: oklch(45% 0.02 252);
+  --map-cell-obstacle: oklch(84% 0.012 252);
+  --map-cell-workstation: oklch(78% 0.11 78);
+  --map-cell-charging: oklch(80% 0.1 226);
+  --map-cell-resource: oklch(82% 0.08 168);
+  --map-cell-deadzone: oklch(80% 0.05 330);
+
+  --focus: oklch(50% 0.17 250);
+  --shadow-panel: 0 1px 2px oklch(24% 0.02 258 / 0.08);
+  --shadow-float: 0 12px 32px oklch(24% 0.02 258 / 0.16);
+}
+
+/* ------------------------------------------------------------------ */
+/* Type                                                                */
+/* ------------------------------------------------------------------ */
+:root {
+  --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+
+  --text-3xs: 0.625rem;
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.75rem;
+  --text-2xl: clamp(1.9rem, 3.4vw, 2.9rem);
+
+  --leading-tight: 1.1;
+  --leading-snug: 1.35;
+  --leading-body: 1.55;
+
+  --tracking-tight: -0.02em;
+  --tracking-display: -0.035em;
+  --tracking-label: 0.09em;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+}
+
+/* ------------------------------------------------------------------ */
+/* Space — 4pt scale                                                   */
+/* ------------------------------------------------------------------ */
+:root {
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* Radius — technical, drawn with a ruler. No pills.                  */
+/* ------------------------------------------------------------------ */
+:root {
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius: 5px;
+  --radius-md: 7px;
+  --radius-lg: 10px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Motion — state changes only, and never for decoration               */
+/* ------------------------------------------------------------------ */
+:root {
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 320ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0.01ms;
+    --duration-base: 0.01ms;
+    --duration-slow: 0.01ms;
+  }
+}
