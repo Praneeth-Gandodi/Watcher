@@ -20,6 +20,7 @@ const failureKinds = new Set<FailureKind>(["actuator", "sensor", "compute", "com
 const conflictKinds = new Set<Conflict["kind"]>(["collision_risk", "right_of_way", "resource"]);
 const conflictSeverities = new Set<Conflict["severity"]>(["info", "warning", "critical"]);
 const resolutionStatuses = new Set<Conflict["status"]>(["open", "resolving", "resolved"]);
+const capabilities = new Set(["transport", "pick", "tug", "inspect", "deliver"]);
 const taskStatuses = new Set<Task["status"]>(["pending", "negotiating", "assigned", "in_progress", "blocked", "recovery", "completed", "cancelled"]);
 const routeStatuses = new Set<RoutePlan["status"]>(["proposed", "active", "blocked", "replanned", "completed", "invalid"]);
 const eventTypes = new Set<DomainEvent["event_type"]>([
@@ -63,6 +64,14 @@ function asStringArray(value: unknown, label: string): string[] {
   return asArray(value, label).map((item, index) => asString(item, `${label}[${index}]`));
 }
 
+function asCapabilityArray(value: unknown, label: string): string[] {
+  const values = asStringArray(value, label);
+  values.forEach((capability, index) => {
+    if (!capabilities.has(capability)) throw new Error(`${label}[${index}] is not a canonical capability`);
+  });
+  return values;
+}
+
 function asPosition(value: unknown, label: string): Position2D {
   const record = asRecord(value, label);
   return { x: asFiniteNumber(record.x, `${label}.x`, 0), y: asFiniteNumber(record.y, `${label}.y`, 0) };
@@ -92,7 +101,7 @@ function asRobot(value: unknown, label: string): Robot {
     robot_id: asString(record.robot_id, `${label}.robot_id`),
     position: asPosition(record.position, `${label}.position`),
     battery_percent: batteryPercent,
-    capabilities: asStringArray(record.capabilities ?? [], `${label}.capabilities`),
+    capabilities: asCapabilityArray(record.capabilities ?? [], `${label}.capabilities`),
     workload: asNonNegativeInteger(record.workload, `${label}.workload`),
     status,
     current_task_id: record.current_task_id === null || record.current_task_id === undefined ? null : asString(record.current_task_id, `${label}.current_task_id`),
@@ -121,7 +130,7 @@ function asTask(value: unknown, label: string): Task {
     task_id: asString(record.task_id, `${label}.task_id`),
     target: asPosition(record.target, `${label}.target`),
     priority,
-    required_capabilities: asStringArray(record.required_capabilities ?? [], `${label}.required_capabilities`),
+    required_capabilities: asCapabilityArray(record.required_capabilities ?? [], `${label}.required_capabilities`),
     estimated_duration_s: asFiniteNumber(record.estimated_duration_s, `${label}.estimated_duration_s`, Number.EPSILON),
     status,
     assigned_robot_id: record.assigned_robot_id === null || record.assigned_robot_id === undefined ? null : asString(record.assigned_robot_id, `${label}.assigned_robot_id`),

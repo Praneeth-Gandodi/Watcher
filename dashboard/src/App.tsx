@@ -189,7 +189,10 @@ function App() {
             if (!hadSnapshot) setActiveDeadlocks(getActiveDeadlockCycles(missedEvents));
           }
         } catch (eventsError) {
-          if (!disposed) setError(eventsError instanceof Error ? eventsError.message : "The event history could not be loaded.");
+          if (!disposed) {
+            setConnection("stale");
+            setError(eventsError instanceof Error ? eventsError.message : "The event history could not be loaded.");
+          }
         }
 
         socket = connectToEvents(
@@ -205,6 +208,7 @@ function App() {
           },
           () => {
             if (disposed) return;
+            setConnection("stale");
             setError("The event stream reported an invalid frame. Waiting for the next snapshot.");
           },
         );
