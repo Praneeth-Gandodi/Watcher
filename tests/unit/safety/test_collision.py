@@ -93,8 +93,8 @@ class TestMotionIntent:
         intent = detector.build_intent(robot, route, speed_mps=1.0, index=WorldIndex.from_world(world))
         # One sample at the present plus one per step across the horizon.
         assert len(intent.positions) == 5
-        assert intent.positions[0] == Position2D(x=4.0, y=4.0)
-        assert intent.positions[-1].x > 4.0
+        assert intent.positions[0] == (4.0, 4.0)
+        assert intent.positions[-1][0] > 4.0
 
     def test_advances_along_the_route_polyline(self) -> None:
         world = build_world()
@@ -102,11 +102,11 @@ class TestMotionIntent:
         robot = make_robot("robot-001", 4.0, 4.0)
         route = make_route("robot-001", "task-001", ((4.0, 4.0), (8.0, 4.0), (8.0, 10.0)))
         intent = detector.build_intent(robot, route, speed_mps=3.0, index=WorldIndex.from_world(world))
-        last = intent.positions[-1]
+        last_x, last_y = intent.positions[-1]
         # Two steps of 3 m: the first is spent crossing to x=8, the rest climbs
         # the second leg.
-        assert last.x == 8.0
-        assert 4.0 < last.y < 10.0
+        assert last_x == pytest.approx(8.0)
+        assert 4.0 < last_y < 10.0
 
     def test_stops_projecting_at_the_route_end(self) -> None:
         world = build_world()
@@ -114,7 +114,7 @@ class TestMotionIntent:
         robot = make_robot("robot-001", 4.0, 4.0)
         route = make_route("robot-001", "task-001", ((4.0, 4.0), (6.0, 4.0)))
         intent = detector.build_intent(robot, route, speed_mps=5.0, index=WorldIndex.from_world(world))
-        assert intent.positions[-1] == Position2D(x=6.0, y=4.0)
+        assert intent.positions[-1] == pytest.approx((6.0, 4.0))
 
 
 class TestConflictDetection:

@@ -37,13 +37,19 @@ CONFLICT_MEMORY_S = 1.5
 
 @dataclass(frozen=True, slots=True)
 class MotionIntent:
-    """A robot's predicted path over the prediction horizon."""
+    """A robot's predicted path over the prediction horizon.
+
+    ``positions`` holds plain ``(x, y)`` tuples rather than ``Position2D``.
+    Prediction runs for every moving robot every tick — thousands of samples at
+    fleet scale — and constructing a validated model per sample cost more than
+    the arithmetic. A ``Position2D`` is built only where one is published.
+    """
 
     robot_id: str
     route: RoutePlan
     speed_mps: float
     cells: tuple[Cell, ...]
-    positions: tuple[Position2D, ...]
+    positions: tuple[tuple[float, float], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,14 +87,24 @@ class CollisionDetector:
         # One sample at the current position plus one per prediction step, so
         # the horizon is fully covered instead of stopping a step short.
         samples = max(2, int(self.horizon_s / step_s) + 1)
+        cell_size = index.cell_size_m
+        columns = index.columns
+        rows = index.rows
+        # Nudge by a nanometre before flooring. Two robots converging on the
+        # same point can differ by float noise, and without the nudge they
+        # would be reported as being in adjacent cells — a right-of-way warning
+        # instead of the collision they are actually about to have.
+        epsilon = 1e-9
         cells: list[Cell] = []
-        positions: list[Position2D] = []
-        position = robot.position
+        positions: list[tuple[float, float]] = []
+        x, y = robot.position.x, robot.position.y
         cursor = 1
         for _ in range(samples):
-            positions.append(position)
-            cells.append(index.cell_of(position))
-            position, cursor = _project(position, route.waypoints, speed_mps * step_s, cursor)
+            positions.append((x, y))
+            cell_x = min(columns - 1, max(0, int((x + epsilon) / cell_size)))
+            cell_y = min(rows - 1, max(0, int((y + epsilon) / cell_size)))
+            cells.append(Cell(cell_x, cell_y))
+            x, y, cursor = _project(x, y, route.waypoints, speed_mps * step_s, cursor)
         return MotionIntent(
             robot_id=robot.robot_id,
             route=route,
@@ -103,13 +119,21 @@ class CollisionDetector:
         *,
         robots_by_id: dict[str, Robot],
         task_priority_by_robot: dict[str, int] | None = None,
+        cell_size_m: float = 2.0,
         now_s: float,
     ) -> tuple[list[Conflict], list[YieldDecision]]:
         """Find predicted conflicts and decide who yields for each.
 
+        Pairs are pruned by predicted cell overlap before the distance test.
+        Two robots can only come within ``margin_m`` of each other if their
+        predicted cells are the same or adjacent, so a grid lookup replaces the
+        all-pairs comparison. That is what keeps conflict detection affordable
+        at 500 robots, and it is exact rather than approximate as long as the
+        margin does not exceed the cell size.
+
         Conflicts are deduplicated per robot pair and suppressed for
-        ``CONFLICT_MEMORY_S`` after the first report so a single approach does
-        not flood the event stream while it resolves.
+        ``memory_s`` after the first report so a single approach does not flood
+        the event stream while it resolves.
         """
 
         self._expire(now_s)
@@ -117,46 +141,45 @@ class CollisionDetector:
         conflicts: list[Conflict] = []
         decisions: list[YieldDecision] = []
 
-        for left_index in range(len(intents)):
-            for right_index in range(left_index + 1, len(intents)):
-                left = intents[left_index]
-                right = intents[right_index]
-                overlap = _first_overlap(left, right, self.margin_m)
-                if overlap is None:
-                    continue
-                left_robot = robots_by_id.get(left.robot_id)
-                right_robot = robots_by_id.get(right.robot_id)
-                if left_robot is None or right_robot is None:
-                    continue
-                key = _pair_key(left.robot_id, right.robot_id)
-                if key in self.recent:
-                    continue
-                self.recent[key] = now_s
-                position, kind, severity = overlap
-                conflicts.append(
-                    Conflict(
-                        conflict_id=_conflict_id(key, now_s),
-                        kind=kind,
-                        severity=severity,
-                        robot_ids=_sorted_pair(left.robot_id, right.robot_id),
-                        task_ids=_task_ids(left_robot, right_robot),
-                        position=position,
-                        status=ResolutionStatus.RESOLVING,
-                        detected_at_s=round(now_s, 3),
-                    )
+        for left_index, right_index in _candidate_pairs(intents, self.margin_m, cell_size_m):
+            left = intents[left_index]
+            right = intents[right_index]
+            overlap = _first_overlap(left, right, self.margin_m)
+            if overlap is None:
+                continue
+            left_robot = robots_by_id.get(left.robot_id)
+            right_robot = robots_by_id.get(right.robot_id)
+            if left_robot is None or right_robot is None:
+                continue
+            key = _pair_key(left.robot_id, right.robot_id)
+            if key in self.recent:
+                continue
+            self.recent[key] = now_s
+            position, kind, severity = overlap
+            conflicts.append(
+                Conflict(
+                    conflict_id=_conflict_id(key, now_s),
+                    kind=kind,
+                    severity=severity,
+                    robot_ids=_sorted_pair(left.robot_id, right.robot_id),
+                    task_ids=_task_ids(left_robot, right_robot),
+                    position=position,
+                    status=ResolutionStatus.RESOLVING,
+                    detected_at_s=round(now_s, 3),
                 )
-                decisions.append(
-                    decide_right_of_way(
-                        left_robot,
-                        left.route,
-                        priorities.get(left.robot_id, 1),
-                        right_robot,
-                        right.route,
-                        priorities.get(right.robot_id, 1),
-                        position=position,
-                        kind=kind,
-                    )
+            )
+            decisions.append(
+                decide_right_of_way(
+                    left_robot,
+                    left.route,
+                    priorities.get(left.robot_id, 1),
+                    right_robot,
+                    right.route,
+                    priorities.get(right.robot_id, 1),
+                    position=position,
+                    kind=kind,
                 )
+            )
         return conflicts, decisions
 
     def _expire(self, now_s: float) -> None:
@@ -253,6 +276,45 @@ def _explain(
     return f"{keeper.robot_id} wins the identifier tie-break"
 
 
+def _candidate_pairs(
+    intents: Sequence[MotionIntent], margin_m: float, cell_size_m: float
+) -> list[tuple[int, int]]:
+    """Return index pairs whose predicted cells are within one cell of each other.
+
+    When the safety margin is larger than a cell, a pair could be in conflict
+    while looking far apart on the grid, so the search falls back to comparing
+    everything rather than silently missing hazards.
+    """
+
+    count = len(intents)
+    if count < 2:
+        return []
+    if margin_m > cell_size_m:
+        return [
+            (left, right)
+            for left in range(count)
+            for right in range(left + 1, count)
+        ]
+
+    by_cell: dict[Cell, list[int]] = {}
+    for index, intent in enumerate(intents):
+        for cell in intent.cells:
+            by_cell.setdefault(cell, []).append(index)
+
+    pairs: set[tuple[int, int]] = set()
+    for index, intent in enumerate(intents):
+        neighbours: set[int] = set()
+        for cell in intent.cells:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    neighbours.update(by_cell.get(Cell(cell.x + dx, cell.y + dy), ()))
+        neighbours.discard(index)
+        for other in neighbours:
+            if other > index:
+                pairs.add((index, other))
+    return sorted(pairs)
+
+
 def _first_overlap(
     left: MotionIntent, right: MotionIntent, margin_m: float
 ) -> tuple[Position2D, ConflictKind, ConflictSeverity] | None:
@@ -260,23 +322,24 @@ def _first_overlap(
 
     samples = min(len(left.positions), len(right.positions))
     for step in range(samples):
-        left_position = left.positions[step]
-        right_position = right.positions[step]
-        distance = hypot(
-            left_position.x - right_position.x, left_position.y - right_position.y
-        )
+        left_x, left_y = left.positions[step]
+        right_x, right_y = right.positions[step]
+        distance = hypot(left_x - right_x, left_y - right_y)
         if distance > margin_m:
             continue
         if left.cells[step] != right.cells[step]:
             # Close but in different cells: a right-of-way situation rather than
             # an imminent collision.
-            midpoint = Position2D(
-                x=round((left_position.x + right_position.x) / 2, 3),
-                y=round((left_position.y + right_position.y) / 2, 3),
+            return (
+                Position2D(
+                    x=round((left_x + right_x) / 2, 3),
+                    y=round((left_y + right_y) / 2, 3),
+                ),
+                ConflictKind.RIGHT_OF_WAY,
+                ConflictSeverity.WARNING,
             )
-            return midpoint, ConflictKind.RIGHT_OF_WAY, ConflictSeverity.WARNING
         return (
-            left_position,
+            Position2D(x=round(left_x, 3), y=round(left_y, 3)),
             ConflictKind.COLLISION_RISK,
             ConflictSeverity.CRITICAL,
         )
@@ -284,12 +347,13 @@ def _first_overlap(
 
 
 def _project(
-    position: Position2D,
+    x: float,
+    y: float,
     waypoints: tuple[Position2D, ...],
     distance_m: float,
     cursor: int,
-) -> tuple[Position2D, int]:
-    """Advance ``position`` along the polyline and return the new waypoint cursor.
+) -> tuple[float, float, int]:
+    """Advance ``(x, y)`` along the polyline and return the new waypoint cursor.
 
     The cursor is essential: without it every sample restarts from
     ``waypoints[0]``, which lies *behind* the robot, so the projection walks
@@ -300,24 +364,18 @@ def _project(
     index = max(1, cursor)
     while index < len(waypoints):
         target = waypoints[index]
-        segment = hypot(target.x - position.x, target.y - position.y)
+        segment = hypot(target.x - x, target.y - y)
         if segment <= 1e-9:
             index += 1
             continue
         if segment <= remaining:
-            position = target
+            x, y = target.x, target.y
             remaining -= segment
             index += 1
             continue
         ratio = remaining / segment
-        return (
-            Position2D(
-                x=round(position.x + (target.x - position.x) * ratio, 4),
-                y=round(position.y + (target.y - position.y) * ratio, 4),
-            ),
-            index,
-        )
-    return position, index
+        return (x + (target.x - x) * ratio, y + (target.y - y) * ratio, index)
+    return x, y, index
 
 
 def _pair_key(left_id: str, right_id: str) -> str:

@@ -78,6 +78,22 @@ class FailureRegistry:
             return 0.0
         return max(0.0, now_s - last)
 
+    def is_settled(self, robot_id: str, battery_percent: float) -> bool:
+        """Whether a robot cannot change state this tick without intervention.
+
+        A robot with no injected failure, no active communication-loss window,
+        and energy remaining is nominal by definition, so the runtime can skip
+        building its contract model purely to re-derive that. At 500 robots this
+        fast path removes almost all of the per-tick health cost.
+        """
+
+        if robot_id in self.failures:
+            return False
+        until = self.silenced_until_s.get(robot_id)
+        if until is not None:
+            return False
+        return battery_percent > 0.0
+
     def evaluate(self, robot: Robot, *, now_s: float) -> HealthVerdict:
         """Decide the robot's authoritative health for this tick.
 
