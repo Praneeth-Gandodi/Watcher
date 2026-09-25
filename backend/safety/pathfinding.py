@@ -261,9 +261,12 @@ def astar_route_plan(
             planned_at_s=planned_at_s,
         )
 
-    waypoints = tuple(
-        grid_index.position_for_cell(step.cell) for step in path
-    )
+    waypoints = tuple(grid_index.position_for_cell(step.cell) for step in path)
+    if len(waypoints) < 2:
+        # A robot already standing on its target has a zero-length route, but
+        # ``RoutePlan`` requires at least two waypoints. Repeating the point is
+        # the honest representation: the robot does not move.
+        waypoints = (origin, target)
     return RoutePlan(
         route_id=route_id,
         robot_id=robot_id,

@@ -26,8 +26,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations
+from math import isfinite
 
-from backend.safety.collision import Collision, detect_collision
+from backend.safety.collision import Collision, build_segments, detect_collision
 from backend.safety.trajectory import (
     Trajectory,
     hold_until,
@@ -43,6 +44,7 @@ __all__ = [
     "YieldResolution",
     "can_wait_safely",
     "choose_yielding_robot",
+    "clearance_time_s",
     "find_earliest_conflict",
     "resolve_conflict",
     "try_timing_resolution",
@@ -50,6 +52,12 @@ __all__ = [
 
 #: Extra clearance added after a conflict window before a robot restarts.
 DEFAULT_SAFETY_MARGIN_S = 0.1
+
+#: How many times a delay may be lengthened after the fleet vetoes it. A delay
+#: long enough for one shared cell can still be too short for a cell further
+#: along the same corridor, so the release time escalates until the whole
+#: corridor is clear or the bound is reached.
+MAX_DELAY_ATTEMPTS = 8
 
 #: Weighting of the deterministic priority score.
 _TASK_PRIORITY_WEIGHT = 100.0
@@ -277,6 +285,58 @@ def can_wait_safely(
     )
 
 
+def clearance_time_s(
+    trajectory: Trajectory,
+    cells: frozenset[Cell],
+    from_time_s: float,
+) -> float:
+    """Return when a robot has finished sweeping every cell in ``cells``.
+
+    A right-of-way delay must outlast the other robot's *whole* occupancy of the
+    shared cells, not just the window that overlaps right now: with the swept
+    footprint model a cell can stay occupied across several consecutive
+    segments. Releasing after the first overlapping window simply recreates the
+    same conflict one segment later, which is why the prototype appeared to
+    "delay without ever clearing".
+    """
+
+    latest = from_time_s
+    for segment in build_segments(trajectory):
+        if segment.end_time_s <= from_time_s:
+            continue
+        if segment.swept_cells & cells:
+            latest = max(latest, segment.end_time_s)
+    return latest
+
+
+def _escalated_release_time_s(
+    trajectories: Mapping[str, Trajectory],
+    check: WaitCheck,
+    release_time_s: float,
+    safety_margin_s: float,
+) -> float:
+    """Return a longer release time that accounts for a vetoing conflict.
+
+    ``can_wait_safely`` reports the robot that blocked the candidate hold and
+    the cells involved. Releasing after *that* robot finishes sweeping those
+    cells turns "too short" into a concrete new deadline, which is what lets a
+    two-robot corridor clear instead of deadlocking. Returns ``release_time_s``
+    unchanged when no longer delay exists, so the caller can stop.
+    """
+
+    if check.collision is None or check.conflict_with is None:
+        return release_time_s
+    other = trajectories.get(check.conflict_with)
+    if other is None:
+        return release_time_s
+    extended = clearance_time_s(
+        other,
+        frozenset(check.collision.cells),
+        check.collision.start_time_s,
+    ) + safety_margin_s
+    return extended if extended > release_time_s else release_time_s
+
+
 def try_timing_resolution(
     conflict: FleetConflict,
     trajectories: Mapping[str, Trajectory],
@@ -288,11 +348,33 @@ def try_timing_resolution(
 
     The yielder chosen by priority is attempted first; if that robot cannot
     safely hold, the other robot is tried, because a slightly lower-priority
-    robot yielding immediately is far better than a standstill.
+    robot yielding immediately is far better than a standstill. A vetoed hold is
+    retried with a longer release time rather than abandoned.
     """
 
     decision = resolve_conflict(conflict, robot_info)
-    release_time = conflict.end_time_s + safety_margin_s
+    shared_cells = frozenset(conflict.cells)
+    clearance = max(
+        clearance_time_s(
+            trajectories[conflict.robot1], shared_cells, conflict.start_time_s
+        ),
+        clearance_time_s(
+            trajectories[conflict.robot2], shared_cells, conflict.start_time_s
+        ),
+    )
+    if not isfinite(clearance):
+        return YieldResolution(
+            resolved=False,
+            decision=decision,
+            strategy=None,
+            yield_robot=None,
+            trajectory=None,
+            reason=(
+                f"{conflict.robot1} or {conflict.robot2} occupies "
+                f"{sorted(shared_cells)} permanently, so no delay can clear the "
+                "conflict"
+            ),
+        )
     attempts: list[str] = []
 
     for candidate_yielder in (decision.yield_robot, decision.priority_robot):
@@ -310,38 +392,31 @@ def try_timing_resolution(
                 "cannot help"
             )
             continue
-        check = can_wait_safely(
-            candidate_yielder,
-            trajectories,
-            segment_index,
-            release_time,
-            from_time_s=trajectory[segment_index].timestamp_s,
-        )
-        if check.safe:
-            resolved_decision = (
-                decision
-                if candidate_yielder == decision.yield_robot
-                else RightOfWayDecision(
-                    priority_robot=decision.yield_robot,
-                    yield_robot=candidate_yielder,
-                    reason=(
-                        f"{candidate_yielder} yields because the preferred "
-                        f"yielder cannot hold safely ({decision.reason})"
-                    ),
+        hold_from_s = trajectory[segment_index].timestamp_s
+        release_time = clearance + safety_margin_s
+        for _ in range(MAX_DELAY_ATTEMPTS):
+            check = can_wait_safely(
+                candidate_yielder,
+                trajectories,
+                segment_index,
+                release_time,
+                from_time_s=hold_from_s,
+            )
+            if check.safe:
+                return _resolved_delay(
+                    resolution=check,
+                    decision=decision,
+                    candidate_yielder=candidate_yielder,
+                    conflict=conflict,
+                    release_time=release_time,
                 )
+            longer = _escalated_release_time_s(
+                trajectories, check, release_time, safety_margin_s
             )
-            return YieldResolution(
-                resolved=True,
-                decision=resolved_decision,
-                strategy="wait",
-                yield_robot=candidate_yielder,
-                trajectory=check.trajectory,
-                reason=(
-                    f"{candidate_yielder} delays departure until "
-                    f"{release_time:g}s: {check.reason}"
-                ),
-            )
-        attempts.append(f"{candidate_yielder}: {check.reason}")
+            if longer <= release_time:
+                attempts.append(f"{candidate_yielder}: {check.reason}")
+                break
+            release_time = longer
 
     return YieldResolution(
         resolved=False,
@@ -350,6 +425,41 @@ def try_timing_resolution(
         yield_robot=None,
         trajectory=None,
         reason="; ".join(attempts) or "no timing delay is available",
+    )
+
+
+def _resolved_delay(
+    *,
+    resolution: WaitCheck,
+    decision: RightOfWayDecision,
+    candidate_yielder: str,
+    conflict: FleetConflict,
+    release_time: float,
+) -> YieldResolution:
+    """Package a validated hold as a ``YieldResolution``."""
+
+    resolved_decision = (
+        decision
+        if candidate_yielder == decision.yield_robot
+        else RightOfWayDecision(
+            priority_robot=decision.yield_robot,
+            yield_robot=candidate_yielder,
+            reason=(
+                f"{candidate_yielder} yields because the preferred yielder cannot "
+                f"hold safely ({decision.reason})"
+            ),
+        )
+    )
+    return YieldResolution(
+        resolved=True,
+        decision=resolved_decision,
+        strategy="wait",
+        yield_robot=candidate_yielder,
+        trajectory=resolution.trajectory,
+        reason=(
+            f"{candidate_yielder} delays departure until {release_time:g}s: "
+            f"{resolution.reason}"
+        ),
     )
 
 

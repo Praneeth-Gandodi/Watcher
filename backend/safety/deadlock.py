@@ -210,12 +210,17 @@ def recover_deadlock(
 def wait_graph_from_blocked(
     blocked: Mapping[str, Sequence[str]],
 ) -> dict[str, tuple[str, ...]]:
-    """Build a deterministic wait graph from blocked-robot observations."""
+    """Build a deterministic wait graph from blocked-robot observations.
+
+    Robots that are not waiting for anything are dropped, duplicates are
+    removed, and both the keys and the edges are sorted, so the result never
+    depends on the caller's mapping order.
+    """
 
     return {
-        robot_id: tuple(sorted(dict.fromkeys(wait_graph.get(robot_id, ()))))
-        for robot_id in sorted(blocked)
-        if wait_graph.get(robot_id)
+        robot_id: tuple(sorted(dict.fromkeys(waiters)))
+        for robot_id, waiters in sorted(blocked.items())
+        if waiters
     }
 
 

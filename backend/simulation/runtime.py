@@ -50,7 +50,6 @@ from backend.contracts.commands import (
 )
 from backend.contracts.events import (
     BatteryLowPayload,
-    CommunicationLostPayload,
     ConflictDetectedPayload,
     DeadlockDetectedPayload,
     EventEnvelope,
@@ -565,6 +564,7 @@ class SimulationRuntime:
         self._tasks: dict[str, Task] = {}
         self._conflicts: dict[str, Conflict] = {}
         self._battery_notified: dict[str, str] = {}
+        self._reported_deadlocks: set[str] = set()
         self._allocation_latencies_ms: list[float] = []
         self._task_reassignments = 0
         self._detected_deadlocks = 0
@@ -753,10 +753,11 @@ class SimulationRuntime:
 
         This is the only way Agent 1 reaches Agent 2: the composition root
         forwards ``TASK_ASSIGNED`` and ``TASK_REASSIGNED`` and the runtime
-        reacts by planning a route for the new owner.
+        reacts by planning a route for the new owner. Anything that is not a
+        recognised coordination event is ignored.
         """
 
-        payload = event.payload
+        payload = getattr(event, "payload", None)
         if isinstance(payload, TaskAssignedPayload):
             return self.assign_task(payload.assignment.task_id, payload.assignment.robot_id)
         if isinstance(payload, TaskReassignedPayload):
@@ -858,8 +859,14 @@ class SimulationRuntime:
         self._mark_safety_dirty()
 
         if not trajectory:
-            self._record_unroutable(robot_id, task_id, route)
+            # No route exists. The task is reported as blocked rather than left
+            # to stall silently. A `Conflict` needs at least two robots, so this
+            # is surfaced through task and robot status instead of the conflict
+            # list, keeping `open_conflicts` an accurate count.
             self._mark_blocked(robot_id, self._clock.now_s)
+            self._tasks[task_id] = evolve_task(
+                self._tasks[task_id], status=TaskStatus.BLOCKED
+            )
             return requested + self._commit(self._clock.now_s)
 
         if previous_route is None:
@@ -877,24 +884,6 @@ class SimulationRuntime:
                 correlation_id=task_id,
             )
         return requested + planned + self._commit(self._clock.now_s)
-
-    def _record_unroutable(
-        self,
-        robot_id: str,
-        task_id: str,
-        route: RoutePlan,
-    ) -> None:
-        conflict_id = _derived_id("conflict", "unroutable", robot_id, task_id)
-        self._conflicts[conflict_id] = Conflict(
-            conflict_id=conflict_id,
-            kind=ConflictKind.RESOURCE,
-            severity=ConflictSeverity.CRITICAL,
-            robot_ids=(robot_id,),
-            task_ids=(task_id,),
-            position=route.waypoints[-1],
-            status=ResolutionStatus.OPEN,
-            detected_at_s=self._clock.now_s,
-        )
 
     def _detach_task(self, task_id: str, robot_id: str) -> None:
         state = self._require_state(robot_id)
@@ -1511,47 +1500,53 @@ class SimulationRuntime:
     def _check_deadlock(
         self, observed_at_s: float
     ) -> list[EventEnvelope[EventPayload]]:
-        """Detect cyclic waiting and break it by releasing one robot."""
+        """Detect cyclic waiting and propose a yield for each new cycle.
+
+        The report is honest about what the MVP can do: the wait graph is
+        detected and a ``YIELD`` recovery action is published, but the
+        underlying space-time conflict stays **open** because resolving a head-on
+        needs the holding-position or replanning strategies, which are still
+        experimental. The involved robots therefore stay visibly ``BLOCKED`` and
+        the conflict keeps counting towards ``open_conflicts``.
+
+        Each distinct cycle is reported once, so repeated safety passes do not
+        spam the event stream.
+        """
 
         wait_graph = self.wait_graph()
-        if not find_deadlock_cycles(wait_graph):
+        cycles = find_deadlock_cycles(wait_graph)
+        if not cycles:
             return []
-        recovery = recover_deadlock(wait_graph, self.priorities())
-        cycle = recovery.cycle
-        if cycle is None:
-            return []
-        self._detected_deadlocks += 1
-        report = build_deadlock_report(
-            deadlock_id=_derived_id("deadlock", *cycle.robot_ids),
-            cycle=cycle,
-            blocked_task_ids=self._task_ids_for(cycle.robot_ids),
-            detected_at_s=observed_at_s,
-        )
-        events = list(
-            self._emit(
-                DeadlockDetectedPayload(report=report),
-                observed_at_s,
-                correlation_id=report.deadlock_id,
+
+        events: list[EventEnvelope[EventPayload]] = []
+        for cycle in cycles:
+            report = build_deadlock_report(
+                deadlock_id=_derived_id("deadlock", *cycle.robot_ids),
+                cycle=cycle,
+                blocked_task_ids=self._task_ids_for(cycle.robot_ids),
+                detected_at_s=observed_at_s,
             )
-        )
-        if recovery.recovered and recovery.robot_id is not None:
-            for conflict in self._conflicts.values():
-                if (
-                    recovery.robot_id in conflict.robot_ids
-                    and conflict.status is ResolutionStatus.OPEN
-                ):
-                    self._conflicts[conflict.conflict_id] = conflict.model_copy(
-                        update={"status": ResolutionStatus.RESOLVED}
-                    )
-            state = self._require_state(recovery.robot_id)
-            self._robots[recovery.robot_id] = replace(
-                state, blocked_since_s=None, resume_after_s=None
+            if report.deadlock_id in self._reported_deadlocks:
+                continue
+            self._reported_deadlocks.add(report.deadlock_id)
+            self._detected_deadlocks += 1
+            recovery = recover_deadlock(wait_graph, self.priorities())
+            events.extend(
+                self._emit(
+                    DeadlockDetectedPayload(report=report),
+                    observed_at_s,
+                    correlation_id=report.deadlock_id,
+                )
             )
+            if not recovery.recovered or recovery.robot_id is None:
+                continue
             events.extend(
                 self._emit(
                     RecoveryStartedPayload(
                         action=build_recovery_action(
-                            action_id=_derived_id("recovery", "deadlock", recovery.robot_id),
+                            action_id=_derived_id(
+                                "recovery", "deadlock", recovery.robot_id
+                            ),
                             action_type=RecoveryActionType.YIELD,
                             target_robot_ids=(recovery.robot_id,),
                             affected_task_ids=report.blocked_task_ids,
@@ -1703,6 +1698,7 @@ class SimulationRuntime:
         self._tasks.clear()
         self._conflicts.clear()
         self._battery_notified.clear()
+        self._reported_deadlocks.clear()
         self._allocation_latencies_ms.clear()
         self._task_reassignments = 0
         self._detected_deadlocks = 0
