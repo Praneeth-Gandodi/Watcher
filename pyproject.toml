@@ -23,7 +23,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["backend*", "safety*"]
+include = ["backend*"]
 
 [tool.pytest.ini_options]
 minversion = "8.3"
