@@ -27,6 +27,10 @@ Every PR must state:
 - integration impact and required follow-up
 - known limitations
 
+## Reviewer merge gate
+
+A reviewer must inspect the complete diff and all changed files before merge. Automated checks are necessary but never sufficient. Reject or leave unmerged when the change is incorrect, unrelated, duplicated, over-scoped, contract-breaking, insecure, inaccessible, performance-regressive, missing required tests, or likely to break integration. Reviewers must provide concrete findings and must not approve a PR only because CI is green or the author reports completion.
+
 ## Ownership and contracts
 
 Read `AGENTS.md` and the assigned agent prompt. Do not edit another agent's implementation. Any change to `backend/contracts/**` or documented public API requires an integration PR with contract tests and documentation updates.

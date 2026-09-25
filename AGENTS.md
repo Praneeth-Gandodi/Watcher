@@ -28,6 +28,19 @@ Read this file, `ARCHITECTURE.md`, `CONTRACTS.md`, `TESTING.md`, `INTEGRATION.md
 - Do not rewrite unrelated history, force-push shared branches, or squash the feature branch by default. Preserve the focused commit sequence unless the maintainer explicitly requests a squash.
 - A fix discovered during development should be a separate `fix(...)` commit when it is independently understandable.
 
+## PR review and merge gate
+
+Before approving or merging any pull request:
+
+- Read the complete diff and every changed/new line, not only the PR description or check status.
+- Read the full affected implementation files, tests, configuration, dependency manifests/lockfiles, and integration points.
+- Verify the change belongs to the declared agent ownership area and is directly related to the stated task.
+- Check behavior, architecture, contracts, event names, API boundaries, failure handling, security, performance, accessibility, and test quality.
+- Run or verify the relevant local tests/builds when possible; green CI is necessary but not sufficient.
+- Do not merge code that is incorrect, unrelated, speculative, duplicated, over-scoped, contract-breaking, or likely to cause integration issues.
+- If the PR is not ready, leave it unmerged and report concrete findings and required changes. Never hide or waive a review finding.
+- Do not merge solely because the author says it works, because a branch is complete, or because checks passed.
+
 ## Scope and blockers
 
 If the contract answers the question, implement it. Choose the simplest reasonable internal design and document the assumption. Ask for human input only for a genuine contract ambiguity, ownership conflict, missing required information, or unavoidable architecture change.
