@@ -11,6 +11,13 @@
 
 Subsystems communicate through contracts and protocol interfaces, not private imports or shared mutable state. The protected composition root wires adapters. HTTP serves snapshots/commands and a WebSocket streams events. The dashboard obtains a snapshot, then requests events after `last_event_sequence`.
 
+In the current implementation this is concrete, and tests enforce it:
+
+- `backend/app/composition.py` is the only module that imports both agents. It exchanges nothing but frozen contract objects.
+- Agent 1 reaches Agent 2 through `SimulationRuntime.handle_event`, which understands `TASK_ASSIGNED` and `TASK_REASSIGNED`.
+- Agent 2 reaches Agent 1 by publishing `BATTERY_LOW`, `ROBOT_FAILED`, and `COMMUNICATION_LOST`; `ReassignmentService` decides whether the work moves. Agent 2 never creates a `TaskAssignedPayload` or `TaskReassignedPayload`.
+- The runtime's `InMemoryEventStream` is the single sequence authority, so both agents' events share one monotonic numbering and a consumer needs only one cursor.
+
 ## Integration workflow
 
 1. Each agent works in its own clone/worktree and branch.
@@ -22,4 +29,4 @@ Subsystems communicate through contracts and protocol interfaces, not private im
 
 ## Failure and controller outage
 
-The runtime must represent coordination availability separately from robot execution. If coordination fails, local safety and existing work continue; communication loss triggers timeout handling and work recovery. Do not use the dashboard or API as a hidden decision-maker.
+The runtime must represent coordination availability separately from robot execution. If coordination fails, local safety and existing work continue; communication loss triggers timeout handling and work recovery. `SystemMetrics.controller_available` reports the outage and `SimulationRuntime.set_controller_available` models it; a test asserts robots keep moving local work while it is false. Do not use the dashboard or API as a hidden decision-maker.

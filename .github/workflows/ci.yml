@@ -17,6 +17,22 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest tests/contract
 
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      # The whole suite: unit, integration, and the 500-robot scalability
+      # fixture. Skipped with -m "not scalability" for a fast inner loop.
+      - run: python -m pytest
+      # Print the measured scale costs so a CI run produces the evidence the
+      # architecture and demo notes cite.
+      - run: python -m pytest tests/scalability -s
+
   dashboard:
     runs-on: ubuntu-latest
     defaults:
