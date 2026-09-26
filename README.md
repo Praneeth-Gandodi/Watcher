@@ -196,7 +196,9 @@ does not.
   a second per robot, which is ample for right-of-way at walking pace, but it is
   a real reduction in resolution and it is a deliberate trade-off.
 - **The event log is bounded.** 10,000 events in memory, 400 in the console. A
-  client that falls behind recovers through a snapshot, not by replay.
+  client that falls behind recovers through a snapshot, not by replay. The
+  console keeps bids in a second, bid-only window so the auction stays readable
+  at 500 robots, but that window is also a client-side ring.
 - **Single process.** The runtime is one authoritative world behind a lock.
   Horizontal scaling would need the world and its reservations moved out of
   process; that is an architecture change, not a configuration one.

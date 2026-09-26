@@ -10,12 +10,13 @@ import {
 } from "../format";
 import {
   bidsFromEvents,
+  compareTasks,
   eventTone,
   performanceFacts,
   recoveriesFromEvents,
   taskTone,
 } from "../selectors";
-import type { DeadlockCycle, PerformanceFacts } from "../selectors";
+import type { DeadlockCycle, PerformanceFacts, TaskSort } from "../selectors";
 import type { Conflict, DomainEvent, SimulationSnapshot, Task } from "../types";
 import { EmptyState, Metric, StatusPill } from "./Primitives";
 import { Roster } from "./Roster";
@@ -34,20 +35,30 @@ const TABS: Array<{ key: DockTab; label: string }> = [
 export interface DockProps {
   snapshot: SimulationSnapshot | null;
   events: DomainEvent[];
+  /** A longer-retained window over bid events only; see `useFleetConnection`. */
+  bidEvents: DomainEvent[];
   deadlocks: DeadlockCycle[];
   selectedRobotId: string | null;
   onSelectRobot: (robotId: string) => void;
 }
 
-export function Dock({ snapshot, events, deadlocks, selectedRobotId, onSelectRobot }: DockProps) {
+export function Dock({
+  snapshot,
+  events,
+  bidEvents,
+  deadlocks,
+  selectedRobotId,
+  onSelectRobot,
+}: DockProps) {
   const [tab, setTab] = useState<DockTab>("roster");
   const facts = useMemo(() => performanceFacts(snapshot), [snapshot]);
+  const bidCount = useMemo(() => bidsFromEvents(bidEvents).length, [bidEvents]);
 
   const counts: Record<DockTab, string | null> = {
     roster: snapshot ? String(snapshot.robots.length) : null,
     tasks: snapshot ? String(snapshot.tasks.length) : null,
     events: String(events.length),
-    bids: null,
+    bids: bidCount > 0 ? String(bidCount) : null,
     safety: snapshot ? String(snapshot.conflicts.length + deadlocks.length) : null,
     performance: null,
   };
@@ -87,7 +98,7 @@ export function Dock({ snapshot, events, deadlocks, selectedRobotId, onSelectRob
         ) : null}
         {tab === "tasks" ? <TaskTable tasks={snapshot?.tasks ?? []} /> : null}
         {tab === "events" ? <EventStream events={events} /> : null}
-        {tab === "bids" ? <BidStream events={events} /> : null}
+        {tab === "bids" ? <BidStream events={bidEvents} /> : null}
         {tab === "safety" ? (
           <SafetyPanel
             conflicts={snapshot?.conflicts ?? []}
@@ -103,17 +114,29 @@ export function Dock({ snapshot, events, deadlocks, selectedRobotId, onSelectRob
 
 function TaskTable({ tasks }: { tasks: Task[] }) {
   const [text, setText] = useState("");
+  // Live work first, and completed work out of the way by default. Sorting by
+  // identifier alone filled the first page with the runtime's internal
+  // `charge-robot-XXXX` bookkeeping and never showed a real task.
+  const [sort, setSort] = useState<TaskSort>("status");
+  const [hideCompleted, setHideCompleted] = useState(true);
+
   const visible = useMemo(() => {
     const needle = text.trim().toLowerCase();
     return tasks
+      .filter((task) => (hideCompleted ? task.status !== "completed" : true))
       .filter(
         (task) =>
           needle === "" ||
           task.task_id.includes(needle) ||
           (task.assigned_robot_id?.includes(needle) ?? false),
       )
-      .sort((left, right) => left.task_id.localeCompare(right.task_id));
-  }, [tasks, text]);
+      .sort(compareTasks(sort));
+  }, [tasks, text, sort, hideCompleted]);
+
+  const completedCount = useMemo(
+    () => tasks.filter((task) => task.status === "completed").length,
+    [tasks],
+  );
 
   return (
     <div className="table">
@@ -127,12 +150,37 @@ function TaskTable({ tasks }: { tasks: Task[] }) {
             onChange={(event) => setText(event.target.value)}
           />
         </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={hideCompleted}
+            onChange={(event) => setHideCompleted(event.target.checked)}
+          />
+          <span>
+            Hide completed{completedCount > 0 ? ` (${completedCount})` : ""}
+          </span>
+        </label>
+        <label className="select select--compact">
+          <span className="visually-hidden">Sort tasks</span>
+          <select value={sort} onChange={(event) => setSort(event.target.value as TaskSort)}>
+            <option value="status">Sort: Status</option>
+            <option value="newest">Sort: Newest</option>
+            <option value="id">Sort: Identifier</option>
+          </select>
+        </label>
         <span className="muted">
           {visible.length} of {tasks.length} tasks
         </span>
       </div>
       {visible.length === 0 ? (
-        <EmptyState title="No tasks tracked" detail="The runtime has not published any work yet." />
+        <EmptyState
+          title={hideCompleted && completedCount > 0 ? "No live tasks" : "No tasks tracked"}
+          detail={
+            hideCompleted && completedCount > 0
+              ? `${completedCount} completed. Clear the filter to see them.`
+              : "The runtime has not published any work yet."
+          }
+        />
       ) : (
         <div className="table__scroll">
           <table className="grid">
@@ -223,8 +271,8 @@ function BidStream({ events }: { events: DomainEvent[] }) {
   if (bids.length === 0) {
     return (
       <EmptyState
-        title="No bids in the retained window"
-        detail="Bids are published by the negotiation layer; this is a view over that event stream."
+        title="No bids retained yet"
+        detail="Bids are published by the negotiation layer. The console keeps a dedicated bid window, so this fills within a second of the auction running."
       />
     );
   }

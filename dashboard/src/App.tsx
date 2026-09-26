@@ -24,6 +24,7 @@ import { activeDeadlocks, statTiles } from "./selectors";
 import { applyTheme, nextTheme, readInitialTheme } from "./theme";
 import type { ThemeName } from "./theme";
 import { useFleetConnection } from "./useFleetConnection";
+import { useSmoothedReadout } from "./useSmoothedReadout";
 import type { Robot } from "./types";
 
 const FAILURE_CODE = "operator-injected";
@@ -55,7 +56,10 @@ export default function App() {
 
   const snapshot = fleet.snapshot;
   const deadlocks = useMemo(() => activeDeadlocks(fleet.events), [fleet.events]);
-  const tiles = useMemo(() => statTiles(snapshot), [snapshot]);
+  // The tiles ease toward the live figures; everything else on the page reads
+  // the snapshot exactly as the runtime published it.
+  const readout = useSmoothedReadout(snapshot);
+  const tiles = useMemo(() => statTiles(snapshot, readout), [snapshot, readout]);
 
   const selectedRobot = useMemo<Robot | null>(
     () => snapshot?.robots.find((robot) => robot.robot_id === selectedRobotId) ?? null,
@@ -265,6 +269,7 @@ export default function App() {
       <Dock
         snapshot={snapshot}
         events={fleet.events}
+        bidEvents={fleet.bidEvents}
         deadlocks={deadlocks}
         selectedRobotId={selectedRobotId}
         onSelectRobot={handleSelectRobot}

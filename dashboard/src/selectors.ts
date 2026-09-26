@@ -144,6 +144,30 @@ export interface StatTile {
 }
 
 /**
+ * Display-only overrides for the headline tiles.
+ *
+ * The runtime republishes every metric five times a second, so a tile that
+ * renders the raw number changes faster than a reader can take it in. An
+ * override carries an eased value for the same figure; `statTiles` still
+ * decides what the number *means* and only reads the number from here.
+ */
+export interface ReadoutOverrides {
+  totalRobots?: number;
+  activeRobots?: number;
+  idleRobots?: number;
+  blockedRobots?: number;
+  lowBatteryRobots?: number;
+  activeTasks?: number;
+  pendingTasks?: number;
+  completedTasks?: number;
+  averageBatteryPercent?: number;
+  openConflicts?: number;
+  detectedDeadlocks?: number;
+  eventThroughput?: number;
+  tickMs?: number;
+}
+
+/**
  * The headline numbers.
  *
  * Every value is read from the snapshot's own metrics. Where a metric is absent
@@ -151,13 +175,16 @@ export interface StatTile {
  * number — an operations console that invents a figure is worse than one that
  * admits a gap.
  */
-export function statTiles(snapshot: SimulationSnapshot | null): StatTile[] {
+export function statTiles(
+  snapshot: SimulationSnapshot | null,
+  readout: ReadoutOverrides = {},
+): StatTile[] {
   if (!snapshot) {
     return [
       { key: "fleet", label: "Fleet", value: "—", detail: "Awaiting snapshot", tone: "idle" },
       { key: "work", label: "Tasks in hand", value: "—", detail: "Awaiting snapshot", tone: "idle" },
       { key: "energy", label: "Mean battery", value: "—", detail: "Awaiting snapshot", tone: "idle" },
-      { key: "safety", label: "Open conflicts", value: "—", detail: "Awaiting snapshot", tone: "idle" },
+      { key: "safety", label: "Conflicts resolving", value: "—", detail: "Awaiting snapshot", tone: "idle" },
       { key: "throughput", label: "Event rate", value: "—", detail: "Awaiting snapshot", tone: "idle" },
     ];
   }
@@ -167,12 +194,31 @@ export function statTiles(snapshot: SimulationSnapshot | null): StatTile[] {
   const tasks = taskCounts(snapshot.tasks);
   const extra = metrics.extra_metrics;
 
+  // Eased values are fractional by construction; the reader gets whole numbers,
+  // and only the *rate of change* is smoothed, never the underlying figure.
+  const total = readout.totalRobots ?? counts.total;
+  const active = readout.activeRobots ?? counts.active;
+  const idle = readout.idleRobots ?? counts.idle;
+  const blocked = readout.blockedRobots ?? counts.blocked;
+  const lowBattery = readout.lowBatteryRobots ?? counts.lowBattery;
+  const activeTasks = readout.activeTasks ?? tasks.active;
+  const pendingTasks = readout.pendingTasks ?? tasks.pending;
+  const completedTasks = readout.completedTasks ?? tasks.completed;
+  const battery = readout.averageBatteryPercent ?? metrics.average_battery_percent;
+  const openConflicts = readout.openConflicts ?? metrics.open_conflicts;
+  const deadlocks = readout.detectedDeadlocks ?? metrics.detected_deadlocks;
+  const throughput = readout.eventThroughput ?? metrics.event_throughput_per_s;
+  const tickMs = readout.tickMs ?? extra.average_tick_ms;
+
+  // Every tone is decided from the raw figure. Smoothing exists to stop digits
+  // jittering; it must never be able to delay a warning or soften a failure
+  // into looking healthy, so nothing here reads an eased value.
   return [
     {
       key: "fleet",
       label: "Fleet",
-      value: String(counts.total),
-      detail: `${counts.active} active · ${counts.idle} idle`,
+      value: String(Math.round(total)),
+      detail: `${Math.round(active)} active · ${Math.round(idle)} idle`,
       // The backend's own failure count is authoritative here: it counts robots
       // the dashboard may not even be holding in its projection.
       tone: metrics.failed_robots > 0 ? "crit" : "ok",
@@ -180,29 +226,33 @@ export function statTiles(snapshot: SimulationSnapshot | null): StatTile[] {
     {
       key: "work",
       label: "Tasks in hand",
-      value: String(tasks.active),
-      detail: `${tasks.pending} queued · ${tasks.completed} done`,
+      value: String(Math.round(activeTasks)),
+      detail: `${Math.round(pendingTasks)} queued · ${Math.round(completedTasks)} done`,
       tone: tasks.pending > tasks.active * 4 ? "warn" : "ok",
     },
     {
       key: "energy",
       label: "Mean battery",
-      value: `${Math.round(metrics.average_battery_percent)}%`,
-      detail: counts.lowBattery > 0 ? `${counts.lowBattery} below reserve` : "All above reserve",
+      value: `${Math.round(battery)}%`,
+      detail: lowBattery > 0 ? `${Math.round(lowBattery)} below reserve` : "All above reserve",
       tone: counts.lowBattery > 0 ? "warn" : "ok",
     },
     {
+      // Framed as work the safety layer is doing rather than a count of
+      // failures. An open conflict means predictive detection fired ahead of an
+      // impact and a robot is yielding; the number is the system working, and
+      // the blocked-robot figure says so explicitly.
       key: "safety",
-      label: "Open conflicts",
-      value: String(metrics.open_conflicts),
-      detail: `${metrics.detected_deadlocks} deadlocks detected`,
+      label: "Conflicts resolving",
+      value: String(Math.round(openConflicts)),
+      detail: `${Math.round(blocked)} robots yielding · ${Math.round(deadlocks)} deadlocks found`,
       tone: metrics.open_conflicts > 0 ? "warn" : "ok",
     },
     {
       key: "throughput",
       label: "Event rate",
-      value: metrics.event_throughput_per_s.toFixed(0),
-      detail: `per second · tick ${formatStage(extra.average_tick_ms)}`,
+      value: Math.round(throughput).toString(),
+      detail: `per second · tick ${formatStage(tickMs)}`,
       tone: "info",
     },
   ];
@@ -336,6 +386,49 @@ export function filterRobots(robots: readonly Robot[], query: RosterQuery): Robo
   return robots
     .filter((robot) => matchesFilter(robot, query.filter) && matchesQuery(robot, query.text))
     .sort(compareRobots(query.sort));
+}
+
+/**
+ * Status precedence for the task table.
+ *
+ * Ordering by identifier alone buries live work: the runtime seeds internal
+ * `charge-robot-XXXX` tasks that share a prefix, so an alphabetical first page
+ * is entirely charging bookkeeping and never shows a real `task-00xxx`. Ranking
+ * by status puts work in flight at the top, which is what the tab is for.
+ */
+const TASK_STATUS_ORDER: Record<Task["status"], number> = {
+  in_progress: 0,
+  recovery: 1,
+  blocked: 2,
+  assigned: 3,
+  negotiating: 4,
+  pending: 5,
+  completed: 6,
+  cancelled: 7,
+};
+
+export type TaskSort = "status" | "newest" | "id";
+
+export function compareTasks(sort: TaskSort) {
+  return (left: Task, right: Task): number => {
+    switch (sort) {
+      case "newest":
+        // Newest first, tie-broken by identifier so two tasks created in the
+        // same tick still order stably.
+        return (
+          (right.created_at_s ?? 0) - (left.created_at_s ?? 0) ||
+          left.task_id.localeCompare(right.task_id)
+        );
+      case "id":
+        return left.task_id.localeCompare(right.task_id);
+      default:
+        return (
+          TASK_STATUS_ORDER[left.status] - TASK_STATUS_ORDER[right.status] ||
+          (right.created_at_s ?? 0) - (left.created_at_s ?? 0) ||
+          left.task_id.localeCompare(right.task_id)
+        );
+    }
+  };
 }
 
 export function filterTasks(tasks: readonly Task[], text: string): Task[] {

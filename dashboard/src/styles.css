@@ -115,10 +115,17 @@ input:disabled {
 
 /* --------------------------------------------------------------- shell */
 
+/* The console is a fixed instrument panel rather than a scrolling document.
+   The map is the hero but the roster, the event log and the performance
+   figures are the evidence, so all of it has to be reachable without scrolling
+   mid-demonstration. The page only scrolls on viewports too narrow to hold the
+   layout, which is handled by the breakpoint below. */
 .shell {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4) var(--space-4);
 }
@@ -402,19 +409,26 @@ input:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
   gap: var(--space-3);
-  align-items: start;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .layout__map {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: var(--space-3);
   min-width: 0;
+  min-height: 0;
 }
 
 .layout__rail {
   display: grid;
+  align-content: start;
   gap: var(--space-3);
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* ---------------------------------------------------------------- tiles */
@@ -481,8 +495,13 @@ input:disabled {
 
 .map {
   position: relative;
-  min-height: 460px;
-  height: clamp(420px, 56vh, 720px);
+  min-height: 0;
+  /* Deliberately not `height: 100%`. The parent is a grid item sized by stretch,
+     so it has no *specified* height for a percentage to resolve against, and a
+     percentage here silently falls back to content height. As a stretched grid
+     item with `height: auto` the map fills its row exactly, and the absolutely
+     positioned canvas below can never feed its own size back into the layout. */
+  height: auto;
   background: var(--paper-sunken);
   border: 1px solid var(--rule);
   border-radius: var(--radius-md);
@@ -490,6 +509,8 @@ input:disabled {
 }
 
 .map__canvas {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
@@ -560,6 +581,135 @@ input:disabled {
   color: var(--warn);
   background: var(--warn-wash);
   border: 1px solid color-mix(in oklab, var(--warn) 40%, transparent);
+}
+
+/* ---------------------------------------------------------------- legend */
+
+.legend {
+  position: absolute;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  width: 268px;
+  /* The key has to be readable without becoming the thing being looked at, so
+     it is capped against the map rather than allowed to cover it. */
+  max-height: min(64%, 360px);
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in oklab, var(--surface) 92%, transparent);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-float);
+  overflow: hidden;
+}
+
+.legend__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink-2);
+  background: none;
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+
+.legend__toggle:hover {
+  color: var(--ink);
+}
+
+.legend__body {
+  display: grid;
+  gap: var(--space-2);
+  padding: 0 var(--space-2) var(--space-2);
+  overflow-y: auto;
+}
+
+.legend__group {
+  display: grid;
+  gap: 2px;
+}
+
+.legend__list {
+  display: grid;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Two columns keep the key short enough to sit in a corner of the map. */
+.legend__list--split {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: var(--space-2);
+}
+
+.legend__row {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--ink-3);
+  font-size: var(--text-3xs);
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.legend__swatch {
+  display: grid;
+  place-items: center;
+  height: 14px;
+  color: var(--idle);
+}
+
+.legend__swatch--active {
+  color: var(--ok);
+}
+
+.legend__swatch--idle {
+  color: var(--idle);
+}
+
+.legend__swatch--blocked {
+  color: var(--warn);
+}
+
+.legend__swatch--charging {
+  color: var(--accent);
+}
+
+.legend__swatch--degraded {
+  color: var(--warn);
+}
+
+.legend__swatch--failed {
+  color: var(--crit);
+}
+
+.legend__line {
+  height: 2px;
+  border-radius: 1px;
+}
+
+.legend__block {
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--map-cell-edge);
+}
+
+.legend__foot {
+  color: var(--ink-3);
+  font-size: var(--text-3xs);
+  line-height: 1.5;
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--rule);
 }
 
 .map__empty {
@@ -789,6 +939,8 @@ input:disabled {
 .dock {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  flex: 0 0 clamp(180px, 27vh, 290px);
+  min-height: 0;
   background: var(--surface);
   border: 1px solid var(--rule);
   border-radius: var(--radius-md);
@@ -835,8 +987,7 @@ input:disabled {
 }
 
 .dock__panel {
-  min-height: 320px;
-  max-height: 420px;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -887,6 +1038,31 @@ input:disabled {
 
 .select {
   min-width: 140px;
+}
+
+.select--compact {
+  min-width: 132px;
+}
+
+/* A checkbox that matches the console's control shapes, used by the task
+   table's "hide completed" filter. */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 auto;
+  color: var(--ink-3);
+  font-size: var(--text-3xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.check input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .roster__meta {
@@ -1261,16 +1437,39 @@ input:disabled {
 /* ----------------------------------------------------------- responsive */
 
 @media (max-width: 1180px) {
+  /* Below this width the three regions can no longer share one screen, so the
+     console goes back to being a scrolling document rather than crushing the
+     map and the dock into unusable slivers. */
+  .shell {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
   .layout {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .layout__rail {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
   }
 
   .tiles {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .map {
+    height: clamp(420px, 56vh, 720px);
+  }
+
+  .dock {
+    flex: 0 0 auto;
+  }
+
+  .dock__panel {
+    min-height: 320px;
+    max-height: 420px;
   }
 }
 
@@ -1296,14 +1495,6 @@ input:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  /* The floor is wider than it is tall, so the map hugs that shape instead of
-     reserving a fixed height and leaving dead bands above and below the world. */
-  .map {
-    min-height: 0;
-    height: auto;
-    aspect-ratio: 5 / 3;
-  }
-
   .roster__row,
   .feed__row {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1317,8 +1508,15 @@ input:disabled {
   .stages__bar {
     display: none;
   }
-}
 
+  /* The floor is wider than it is tall, so on a screen too narrow for the fixed
+     console layout the map hugs that shape instead of reserving a fixed height
+     and leaving dead bands above and below the world.
+
+     These two rules used to sit *after* this breakpoint's closing brace, which
+     left them at the top level: they applied at every width, and the stray
+     closing brace made the minifier report a syntax error. The `aspect-ratio`
+     was silently overriding the map's height in the desktop layout. */
   .map {
     min-height: 0;
     height: auto;

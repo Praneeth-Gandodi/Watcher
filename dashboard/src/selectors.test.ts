@@ -4,6 +4,7 @@ import {
   activeDeadlocks,
   bidsFromEvents,
   compareRobots,
+  compareTasks,
   eventTone,
   filterRobots,
   filterTasks,
@@ -17,6 +18,7 @@ import {
   taskCounts,
   taskTone,
 } from "./selectors";
+import { mergeEvents } from "./state";
 import type { DomainEvent, Robot, SimulationSnapshot, Task } from "./types";
 
 function robot(overrides: Partial<Robot> = {}): Robot {
@@ -203,6 +205,201 @@ describe("stat tiles", () => {
       }),
     );
     expect(tiles.find((tile) => tile.key === "work")?.tone).toBe("warn");
+  });
+
+  it("frames an open conflict as work the safety layer is doing", () => {
+    const tiles = statTiles(
+      snapshot({
+        robots: [
+          robot({ status: "active" }),
+          robot({ robot_id: "robot-0002", status: "blocked" }),
+        ],
+        metrics: { ...snapshot().metrics, open_conflicts: 92, detected_deadlocks: 195 },
+      }),
+    );
+    const safety = tiles.find((tile) => tile.key === "safety");
+    // A bare "92 open conflicts" reads as failure. The tile has to say what the
+    // number is: predictions the safety layer made, and the robots yielding.
+    expect(safety?.label).toBe("Conflicts resolving");
+    expect(safety?.value).toBe("92");
+    expect(safety?.detail).toBe("1 robots yielding · 195 deadlocks found");
+    expect(safety?.tone).toBe("warn");
+  });
+
+  it("prefers an eased readout over the raw figure for display only", () => {
+    const tiles = statTiles(snapshot(), {
+      totalRobots: 499.6,
+      activeRobots: 442.4,
+      idleRobots: 1.2,
+      eventThroughput: 372.6,
+    });
+    const fleet = tiles.find((tile) => tile.key === "fleet");
+    // Eased values are fractional by construction; the reader still gets whole
+    // numbers rather than "499.5999999".
+    expect(fleet?.value).toBe("500");
+    expect(fleet?.detail).toBe("442 active · 1 idle");
+    expect(tiles.find((tile) => tile.key === "throughput")?.value).toBe("373");
+  });
+
+  it("takes the tone from the raw figure, never from the eased one", () => {
+    // Smoothing must never be able to make a failing fleet look healthy, or
+    // delay a warning, so every tone is derived from the snapshot's own metric.
+    const failing = statTiles(
+      snapshot({ metrics: { ...snapshot().metrics, failed_robots: 3 } }),
+      { totalRobots: 500, activeRobots: 500 },
+    );
+    expect(failing.find((tile) => tile.key === "fleet")?.tone).toBe("crit");
+
+    const conflicted = statTiles(
+      snapshot({ metrics: { ...snapshot().metrics, open_conflicts: 92 } }),
+      { openConflicts: 0 },
+    );
+    expect(conflicted.find((tile) => tile.key === "safety")?.tone).toBe("warn");
+  });
+});
+
+describe("task ordering", () => {
+  it("puts work in flight above completed bookkeeping", () => {
+    // Sorting by identifier alone filled the first page with the runtime's
+    // internal `charge-robot-XXXX` tasks and hid every real task.
+    const tasks = [
+      task({ task_id: "charge-robot-0002", status: "completed" }),
+      task({ task_id: "charge-robot-0003", status: "completed" }),
+      task({ task_id: "task-00042", status: "in_progress" }),
+      task({ task_id: "task-00017", status: "assigned" }),
+    ];
+    const ordered = [...tasks].sort(compareTasks("status")).map((item) => item.task_id);
+    expect(ordered).toEqual([
+      "task-00042",
+      "task-00017",
+      "charge-robot-0002",
+      "charge-robot-0003",
+    ]);
+  });
+
+  it("orders the lifecycle from in_progress down to cancelled", () => {
+    const statuses: Task["status"][] = [
+      "cancelled",
+      "completed",
+      "pending",
+      "assigned",
+      "negotiating",
+      "blocked",
+      "in_progress",
+      "recovery",
+    ];
+    const ordered = statuses
+      .map((status, index) => task({ task_id: `task-${index}`, status }))
+      .sort(compareTasks("status"))
+      .map((item) => item.status);
+    expect(ordered).toEqual([
+      "in_progress",
+      "recovery",
+      "blocked",
+      "assigned",
+      "negotiating",
+      "pending",
+      "completed",
+      "cancelled",
+    ]);
+  });
+
+  it("orders by recency when asked, tie-breaking stably", () => {
+    const tasks = [
+      task({ task_id: "task-a", created_at_s: 10 }),
+      task({ task_id: "task-c", created_at_s: 30 }),
+      task({ task_id: "task-b", created_at_s: 10 }),
+    ];
+    expect([...tasks].sort(compareTasks("newest")).map((item) => item.task_id)).toEqual([
+      "task-c",
+      "task-a",
+      "task-b",
+    ]);
+  });
+
+  it("can still sort by identifier", () => {
+    const tasks = [
+      task({ task_id: "task-2", status: "in_progress" }),
+      task({ task_id: "task-1", status: "completed" }),
+    ];
+    expect([...tasks].sort(compareTasks("id")).map((item) => item.task_id)).toEqual([
+      "task-1",
+      "task-2",
+    ]);
+  });
+});
+
+describe("bid retention", () => {
+  // A realistic 500-robot mix: a great many conflict and route events against a
+  // minority of bids, published in one interleaved sequence.
+  const BID_EVERY = 20;
+  const TOTAL_EVENTS = 6000;
+
+  function buildStream(): { all: DomainEvent[]; bids: DomainEvent[] } {
+    const all: DomainEvent[] = [];
+    const bids: DomainEvent[] = [];
+    for (let index = 0; index < TOTAL_EVENTS; index += 1) {
+      if (index % BID_EVERY === 0) {
+        const bid = event({
+          event_id: `bid-${index}`,
+          sequence: index,
+          event_type: "BID_SUBMITTED",
+          payload: {
+            bid: {
+              bid_id: `bid-${index}`,
+              robot_id: `robot-${String(index % 500).padStart(4, "0")}`,
+              task_id: `task-${String(index).padStart(5, "0")}`,
+              total_cost: 1 + (index % 7),
+              distance_cost: 1,
+              battery_cost: 0,
+              workload_cost: 0,
+              estimated_completion_time_s: 10,
+            },
+          },
+        });
+        all.push(bid);
+        bids.push(bid);
+        continue;
+      }
+      all.push(
+        event({
+          event_id: `noise-${index}`,
+          sequence: index,
+          event_type: "CONFLICT_DETECTED",
+        }),
+      );
+    }
+    return { all, bids };
+  }
+
+  it("loses most of the auction when bids share the general event window", () => {
+    const { all } = buildStream();
+    // Exactly what the connection hook holds for the Events tab.
+    const generalWindow = mergeEvents([], all, 400);
+    const visible = bidsFromEvents(generalWindow, 240);
+    // 400 of 6000 events is under a second of a 500-robot run, so only a
+    // handful of bids survive in it.
+    expect(visible.length).toBeLessThan(30);
+  });
+
+  it("keeps a readable auction history in a bid-only window", () => {
+    const { bids } = buildStream();
+    const bidWindow = mergeEvents([], bids, 240);
+    const visible = bidsFromEvents(bidWindow, 240);
+    expect(visible).toHaveLength(240);
+  });
+
+  it("reaches much further back in time than the general window can", () => {
+    const { all, bids } = buildStream();
+    const oldestInGeneral = bidsFromEvents(mergeEvents([], all, 400), 240);
+    const oldestInBidWindow = bidsFromEvents(mergeEvents([], bids, 240), 240);
+
+    const generalOldest = oldestInGeneral[oldestInGeneral.length - 1].sequence;
+    const bidOldest = oldestInBidWindow[oldestInBidWindow.length - 1].sequence;
+
+    // The point of the second buffer: the oldest readable bid goes from about
+    // one second ago to a meaningful stretch of the run.
+    expect(bidOldest).toBeLessThan(generalOldest / 4);
   });
 });
 

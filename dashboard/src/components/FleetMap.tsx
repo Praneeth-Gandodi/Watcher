@@ -24,6 +24,7 @@ import { findRobotAtScreenPosition, getWorldTransform, worldToScreen } from "../
 import { robotTone } from "../selectors";
 import type { DeadlockCycle } from "../selectors";
 import type { Conflict, Robot, RoutePlan, SimulationSnapshot } from "../types";
+import { MapLegend } from "./MapLegend";
 
 export interface MapLayers {
   routes: boolean;
@@ -58,7 +59,7 @@ export interface FleetMapProps {
 }
 
 /** Marker geometry by status: shape carries meaning so colour is not alone. */
-const SHAPE_BY_STATUS: Record<Robot["status"], "circle" | "square" | "triangle" | "diamond" | "cross"> = {
+export const SHAPE_BY_STATUS: Record<Robot["status"], "circle" | "square" | "triangle" | "diamond" | "cross"> = {
   active: "circle",
   idle: "circle",
   blocked: "triangle",
@@ -449,7 +450,9 @@ export default function FleetMap({
     { key: "routes", label: "Routes" },
     { key: "conflicts", label: "Conflicts" },
     { key: "deadlocks", label: "Deadlocks" },
-    { key: "cells", label: "Floor" },
+    // "Floor" was ambiguous next to the map itself; this toggle only controls
+    // the static world cells, so it is named for what it draws.
+    { key: "cells", label: "Static cells" },
     { key: "labels", label: "Labels" },
   ];
 
@@ -506,6 +509,8 @@ export default function FleetMap({
           <span className="muted">Scroll to zoom · drag to pan · 0 resets</span>
         )}
       </div>
+
+      <MapLegend />
 
       {stale && snapshot ? (
         <div className="map__badge map__badge--warn">Stale projection</div>
@@ -619,7 +624,10 @@ function drawRobot(
   options: DrawRobotOptions,
 ): void {
   const { selected, hovered, conflicted, scale, pulse, palette } = options;
-  const radius = clamp(3.2 + scale * 0.55, 2.6, 8);
+  // The fleet is the subject of this view, so markers are sized to stay legible
+  // against a deliberately quiet floor. The cap keeps 500 of them from merging
+  // into a solid mass when the camera is pulled all the way out.
+  const radius = clamp(3.7 + scale * 0.6, 3.1, 9);
   const color = toneColor(robotTone(robot), palette);
   const shape = SHAPE_BY_STATUS[robot.status];
 
@@ -831,6 +839,18 @@ function drawDeadlockCycles(
       else context.lineTo(point.x, point.y);
     });
     context.closePath();
+    context.stroke();
+
+    // A deadlock is a cycle, not a point, so it is marked by the loop itself
+    // plus a dashed hub. A conflict is a solid ring around a point and
+    // right-of-way is a diamond: the three markers stay distinguishable in
+    // greyscale, which is the constraint the map is built under.
+    const centre = points.reduce(
+      (accumulator, point) => ({ x: accumulator.x + point.x, y: accumulator.y + point.y }),
+      { x: 0, y: 0 },
+    );
+    context.beginPath();
+    context.arc(centre.x / points.length, centre.y / points.length, 4, 0, Math.PI * 2);
     context.stroke();
   }
   context.restore();

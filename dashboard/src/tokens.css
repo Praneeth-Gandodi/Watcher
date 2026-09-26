@@ -50,12 +50,15 @@
   --map-floor: oklch(16% 0.016 256);
   --map-grid: oklch(100% 0 0 / 0.055);
   --map-boundary: oklch(52% 0.035 250);
-  --map-cell-obstacle: oklch(33% 0.02 256);
-  --map-cell-workstation: oklch(60% 0.12 76);
-  --map-cell-charging: oklch(58% 0.14 226);
-  --map-cell-resource: oklch(56% 0.1 168);
-  --map-cell-deadzone: oklch(48% 0.06 330);
-  --map-cell-edge: oklch(100% 0 0 / 0.08);
+  /* The floor is context, not the subject. Static cells are held close to the
+     floor in lightness and chroma so the robots stay the highest-contrast thing
+     on the canvas; before this the dead zones read louder than the fleet. */
+  --map-cell-obstacle: oklch(29% 0.013 256);
+  --map-cell-workstation: oklch(46% 0.055 76);
+  --map-cell-charging: oklch(44% 0.06 226);
+  --map-cell-resource: oklch(43% 0.045 168);
+  --map-cell-deadzone: oklch(35% 0.028 330);
+  --map-cell-edge: oklch(100% 0 0 / 0.06);
 
   --focus: oklch(80% 0.14 78);
   --shadow-panel: 0 1px 2px oklch(0% 0 0 / 0.4);
@@ -100,12 +103,14 @@
   --map-floor: oklch(97% 0.007 250);
   --map-grid: oklch(20% 0.02 258 / 0.09);
   --map-boundary: oklch(38% 0.02 252);
-  --map-cell-obstacle: oklch(76% 0.014 252);
-  --map-cell-workstation: oklch(72% 0.13 72);
-  --map-cell-charging: oklch(74% 0.12 226);
-  --map-cell-resource: oklch(76% 0.1 168);
-  --map-cell-deadzone: oklch(74% 0.07 330);
-  --map-cell-edge: oklch(24% 0.02 258 / 0.22);
+  /* Same muting as the dark theme: the fleet is the subject, the floor is
+     context, and the two must not compete in either theme. */
+  --map-cell-obstacle: oklch(84% 0.009 252);
+  --map-cell-workstation: oklch(80% 0.05 72);
+  --map-cell-charging: oklch(81% 0.055 226);
+  --map-cell-resource: oklch(82% 0.04 168);
+  --map-cell-deadzone: oklch(85% 0.025 330);
+  --map-cell-edge: oklch(24% 0.02 258 / 0.16);
 
   --focus: oklch(50% 0.17 250);
   --shadow-panel: 0 1px 2px oklch(24% 0.02 258 / 0.08);

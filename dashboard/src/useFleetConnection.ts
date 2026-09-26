@@ -22,6 +22,14 @@ import type { ControlCommand, DomainEvent, SimulationSnapshot } from "./types";
 export type ConnectionState = "connecting" | "live" | "stale" | "offline";
 
 const MAX_EVENTS_IN_LOG = 400;
+// The auction is a headline claim, so it gets its own retention budget.
+//
+// The general log is a 400-event ring, and at 500 robots the runtime publishes
+// 200-400 events per second, so a bid is evicted roughly a second after it is
+// published. Retaining bids in a second buffer that is only fed bid events
+// means the window holds minutes of auction history instead of one second of
+// everything, and the Bids tab stops reading as empty while the auction runs.
+const MAX_BIDS_IN_LOG = 240;
 const REFRESH_DEBOUNCE_MS = 200;
 const INITIAL_RETRY_MS = 1000;
 const MAX_RETRY_MS = 8000;
@@ -35,6 +43,14 @@ export interface Notice {
 export interface FleetConnection {
   snapshot: SimulationSnapshot | null;
   events: DomainEvent[];
+  /**
+   * A dedicated, longer-lived window over `BID_SUBMITTED` events only.
+   *
+   * This is not a second source of truth: the same canonical events the general
+   * log carries, retained separately so the auction stays readable at a rate
+   * that would otherwise evict it within a second.
+   */
+  bidEvents: DomainEvent[];
   connection: ConnectionState;
   notice: Notice | null;
   lastSync: Date | null;
@@ -49,6 +65,7 @@ export interface FleetConnection {
 export function useFleetConnection(): FleetConnection {
   const [snapshot, setSnapshot] = useState<SimulationSnapshot | null>(null);
   const [events, setEvents] = useState<DomainEvent[]>([]);
+  const [bidEvents, setBidEvents] = useState<DomainEvent[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [lastSync, setLastSync] = useState<Date | null>(null);
@@ -71,6 +88,20 @@ export function useFleetConnection(): FleetConnection {
     setNotice(null);
   }, []);
 
+  /**
+   * Fold bid events into the auction buffer.
+   *
+   * Called from the same two places events enter the console, so the buffer
+   * never diverges from the stream: it holds the most recent
+   * `MAX_BIDS_IN_LOG` bids regardless of what the general log has since
+   * evicted.
+   */
+  const recordBids = useCallback((incoming: readonly DomainEvent[]) => {
+    const bids = incoming.filter((event) => event.event_type === "BID_SUBMITTED");
+    if (bids.length === 0) return;
+    setBidEvents((current) => mergeEvents(current, bids, MAX_BIDS_IN_LOG));
+  }, []);
+
   useEffect(() => {
     disposedRef.current = false;
     let socket: WebSocket | undefined;
@@ -91,6 +122,7 @@ export function useFleetConnection(): FleetConnection {
       const batch = eventQueueRef.current.splice(0);
       if (batch.length === 0) return;
       setEvents((current) => mergeEvents(current, batch, MAX_EVENTS_IN_LOG));
+      recordBids(batch);
       scheduleRefresh();
     };
 
@@ -162,6 +194,7 @@ export function useFleetConnection(): FleetConnection {
           const missed = await getEvents(next.last_event_sequence);
           if (!disposedRef.current && missed.length > 0) {
             setEvents((current) => mergeEvents(current, missed, MAX_EVENTS_IN_LOG));
+            recordBids(missed);
           }
         } catch {
           // Missing history is survivable: the snapshot is still authoritative,
@@ -238,7 +271,7 @@ export function useFleetConnection(): FleetConnection {
       eventQueueRef.current = [];
       socket?.close();
     };
-  }, [applySnapshot]);
+  }, [applySnapshot, recordBids]);
 
   const issueCommand = useCallback(async (command: ControlCommand) => {
     setCommandPending(true);
@@ -284,6 +317,7 @@ export function useFleetConnection(): FleetConnection {
     () => ({
       snapshot,
       events,
+      bidEvents,
       connection,
       notice,
       lastSync,
@@ -294,7 +328,7 @@ export function useFleetConnection(): FleetConnection {
       issueCommand,
       refresh,
     }),
-    [snapshot, events, connection, notice, lastSync, commandPending, commandNotice, issueCommand, refresh],
+    [snapshot, events, bidEvents, connection, notice, lastSync, commandPending, commandNotice, issueCommand, refresh],
   );
 
   return value;
