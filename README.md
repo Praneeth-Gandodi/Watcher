@@ -4,8 +4,6 @@
 
 Watcher is a software-only simulation of a dense industrial warehouse where heterogeneous mobile robots coordinate tasks, plan routes, avoid space-time conflicts, and recover from failures.
 
-> **No physical robots are required.** The robots are simulated software agents; the coordination, safety, and recovery logic runs for real.
-
 **Repository:** https://github.com/Praneeth-Gandodi/Watcher  
 **Live demo:** https://watcher-l439.onrender.com
 
