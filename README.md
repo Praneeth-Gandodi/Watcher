@@ -1,12 +1,13 @@
 # Watcher
 
-Decentralized coordination and mission management for heterogeneous mobile
-robots in a dense industrial environment.
+Decentralized coordination for heterogeneous mobile robots in a dense
+industrial environment.
 
-Watcher is a software-only simulation of a warehouse floor where robots bid for
-their own work, plan their own routes, resolve their own right of way, and
-recover from their own failures. The coordination service allocates work. It is
-not the execution authority, and the floor keeps working when it goes away.
+Watcher is a software-only simulation of a warehouse floor where every robot
+bids for its own work, plans its own route, yields its own right of way, and
+recovers from its own failures. There is no central traffic controller. The
+coordination service allocates work; it is not the execution authority, and the
+floor keeps working when it goes away.
 
 **Live demo:** _TODO: deployment URL_
 
@@ -17,90 +18,77 @@ not the execution authority, and the floor keeps working when it goes away.
 ## What it does
 
 A task arrives. Every robot that is free and capable of doing it computes a bid
-from its distance, its workload, its remaining battery, and the task priority.
-The best bid wins. The winner plans a footprint-aware route around the racking,
-then predicts whether it will actually collide with anyone in space *and* time.
-If it does, the documented priority order decides who yields. If it cannot
-safely hold position it retreats and replans. If two robots end up waiting on
-each other, the cycle is detected and broken. If a robot runs low, it hands its
-task to a robot that can finish it. If it fails outright, its task is migrated.
+from its distance, its workload, its remaining charge, and the task priority.
+The best bid wins. The winner plans a footprint-aware route around the racking.
+While it travels it predicts whether it will actually collide with anyone, in
+space and in time, and yields if the documented priority order says it should. If
+it cannot hold its position safely it retreats and replans. If it runs out of
+battery it hands its task to a robot that can finish it. If it fails, its task
+is migrated. If two robots end up waiting on each other, the cycle is detected
+and broken.
 
-Every one of those decisions is published as a canonical event, and the console
-is a view over that stream.
+Every one of those decisions is published as a canonical event. The console is a
+view over that stream.
 
-| Capability | Where it lives |
+| | |
 |---|---|
-| Bid eligibility, scoring, auction, allocation, reassignment | `backend/negotiation/` |
-| Footprint-aware A* planning, time-aware trajectories | `backend/safety/pathfinding.py`, `trajectory.py` |
-| Space-time collision prediction | `backend/safety/collision.py` |
-| Right-of-way, safe holding, replanning around a conflict | `backend/safety/right_of_way.py` |
-| Deadlock detection and recovery | `backend/safety/deadlock.py` |
-| Battery thresholds, charging, return-to-base | `backend/safety/battery.py` |
-| Failure and communication-loss observation | `backend/safety/failure.py` |
-| Heterogeneous robot profiles (size, speed, capability) | `backend/safety/robot_profile.py` |
-| World and fleet construction, layouts, scenarios | `backend/simulation/` |
-| The tick loop, reservations, energy, metrics | `backend/simulation/runtime.py` |
-| HTTP surface and composition root | `backend/app/` |
-| The operations console | `frontend/` |
+| **Fleet** | 10 mixed-size robots on a seeded 40 × 25 warehouse; footprint, speed, charge, and capability profiles cycle across the fleet, so a small demo already exercises 1×1, 2×2, and 3×2 bodies |
+| **Coordination** | Peer-to-peer auction — eligibility, weighted bid scoring, selection, assignment, reassignment |
+| **Safety** | Footprint-aware A*, time-aware trajectories, space-time collision prediction, documented right-of-way priority, safe holding, retreat and replan, wait-for cycle detection |
+| **Resilience** | Robot failure, communication loss, battery reserve and forced drain, task migration on reassignment |
+| **Console** | Live map with body/path/trail rendering, roster, inspector, event log by category, three themes, staged scenario demos that pause on the problem before the fix runs |
 
 ## Architecture
 
 ```
-                    ┌───────────────────────────────┐
+                    ┌──────────────────────────────┐
    operator ───────▶│  console  (frontend/)         │
-                    │  map · roster · inspector      │
-                    │  scenarios · event log         │
-                    └───────────┬───────────────────┘
+                    │  map · roster · inspector     │
+                    │  scenarios · event log        │
+                    └───────────┬──────────────────┘
                           REST  │  poll
                                 ▼
-                    ┌───────────────────────────────┐
-                    │  api  (backend/app/api.py)    │
-                    │  composition root wires the   │
-                    │  coordinator to the runtime   │
-                    └───────────┬───────────────────┘
+                    ┌──────────────────────────────┐
+                    │  api  (backend/app/api.py)   │
+                    │  composition root wires the  │
+                    │  coordinator to the runtime  │
+                    └───────────┬──────────────────┘
                                 ▼
-                    ┌───────────────────────────────┐
-                    │  runtime (simulation/)        │
-                    │  world · grid · reservations  │
-                    │  tasks · routes · events      │
-                    └──────┬──────────────┬─────────┘
-                           │              │
-          ┌────────────────┴───┐   ┌──────┴──────────────┐
-          ▼                    ▼   ▼                     ▼
-    negotiation             safety/                contracts/
-    eligibility,            pathfinding,           frozen models,
-    scoring, engine,        collision, trajectory, events, commands
-    reassignment            right_of_way, deadlock,
+                    ┌──────────────────────────────┐
+                    │  runtime (backend/simulation) │
+                    │                              │
+                    │  health → charge → allocate   │
+                    │  → reserve → move → energy    │
+                    │  → collide → yield → deadlock │
+                    └───────┬──────────────┬───────┘
+                            │              │
+          ┌─────────────────┴──┐   ┌───────┴──────────────┐
+          ▼                    ▼   ▼                      ▼
+     negotiation            safety/                 contracts/
+     eligibility,           pathfinding,            frozen models,
+     scoring, engine,       collision, trajectory,  events, commands
+     reassignment           right_of_way, deadlock,
                             battery, failure
 ```
 
-Two decisions shape everything else:
+Simulation time only advances when the console asks it to. `POST
+/api/v1/simulation/advance` is the clock, so the same seed and the same command
+sequence reproduce the same world, the same fleet, the same decisions, and the
+same event identifiers. Nothing runs in the background that you cannot pause,
+step, or rewind — which is also why a demo can hold on a deadlock and explain it
+before the recovery runs.
 
-**The tick order is fixed and explicit.** Simulation time only advances when
-`POST /api/v1/simulation/advance` is called. The same seed and the same command
-sequence therefore reproduce the same world, the same fleet, the same decisions,
-and the same event identifiers. The console drives the clock; nothing runs in the
-background that you cannot pause, step, or rewind.
-
-**`backend/contracts/**` is frozen and authoritative.** Nothing reaches around
-it. The runtime converts its mutable internal state into contract models only
-when it builds a projection, and the console validates every payload it receives
-rather than casting it.
+`backend/contracts/**` is frozen and authoritative. Nothing reaches around it:
+the runtime converts its mutable internal state into contract models only when
+it builds a projection, and reassignment decisions are built in the negotiation
+layer, not in the composition root or the runtime.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRACTS.md](CONTRACTS.md), and
 [INTEGRATION.md](INTEGRATION.md). The negotiation-to-safety integration is
 documented in
 [docs/integrations/agent-1-agent-2-movement-safety.md](docs/integrations/agent-1-agent-2-movement-safety.md).
 
-## Stack
-
-- Python 3.11+, FastAPI, Pydantic v2, pytest
-- React 19, TypeScript, Vite, Vitest, plain CSS
-- GitHub Actions
-
 ## Running it
-
-Backend and console are two processes in development, one URL in production.
 
 ```powershell
 python -m venv .venv
@@ -109,27 +97,25 @@ python -m pip install -e ".[dev]"
 python -m uvicorn backend.app.main:app --port 8000
 ```
 
+Then the console, in a second terminal:
+
 ```powershell
 cd frontend
 npm install
 npm run dev
 ```
 
-Open <http://localhost:5173>. The console is already pointed at the backend: Vite
-proxies `/api` to `http://127.0.0.1:8000`, so the browser never needs a CORS
-grant and the base URL lives in one place. Override it with
-`VITE_API_BASE_URL` if the backend is somewhere else.
+Open <http://localhost:5173>. The console is already pointed at the backend —
+Vite proxies `/api` to `http://127.0.0.1:8000`, so the browser never needs a
+CORS grant and the base URL lives in one place. Point it elsewhere with
+`VITE_API_BASE_URL`.
 
-## The HTTP surface
+The clock is explicit, so the API is worth knowing on its own:
 
 ```powershell
-# authoritative state and telemetry
 curl http://localhost:8000/api/v1/health
 curl http://localhost:8000/api/v1/snapshot
 curl http://localhost:8000/api/v1/metrics
-curl http://localhost:8000/api/v1/robots
-curl http://localhost:8000/api/v1/tasks
-curl http://localhost:8000/api/v1/routes
 curl http://localhost:8000/api/v1/telemetry
 
 # create a task: negotiation, allocation, route planning, and a safety pass
@@ -138,35 +124,27 @@ curl -X POST http://localhost:8000/api/v1/tasks -H "Content-Type: application/js
            "required_capabilities": [], "estimated_duration_s": 20.0,
            "status": "pending", "assigned_robot_id": null, "created_at_s": 0.0}}'
 
-# simulation time is advanced explicitly, so every run is reproducible
+# advance the clock
 curl -X POST "http://localhost:8000/api/v1/simulation/advance?ticks=100"
-curl -X POST http://localhost:8000/api/v1/simulation/pause
-curl -X POST http://localhost:8000/api/v1/simulation/resume
-curl -X POST http://localhost:8000/api/v1/simulation/speed \
-  -H "Content-Type: application/json" -d '{"multiplier": 4.0}'
-curl -X POST http://localhost:8000/api/v1/simulation/reset \
-  -H "Content-Type: application/json" -d '{"seed": 2026}'
 
 # canonical events after a cursor
 curl "http://localhost:8000/api/v1/events?after_sequence=0"
 
-# fault injection
+# faults
 curl -X POST http://localhost:8000/api/v1/faults/failure -H "Content-Type: application/json" \
   -d '{"robot_id": "robot-001", "failure": {"kind": "actuator", "code": "drive-failure", "detected_at_s": 0.0}}'
 curl -X POST http://localhost:8000/api/v1/faults/communication-loss -H "Content-Type: application/json" \
   -d '{"robot_id": "robot-002", "timeout_s": 3.0}'
-curl -X POST http://localhost:8000/api/v1/faults/restore -H "Content-Type: application/json" \
-  -d '{"robot_id": "robot-001"}'
+curl -X POST http://localhost:8000/api/v1/faults/battery-drain -H "Content-Type: application/json" \
+  -d '{"robot_id": "robot-003", "percent": 5.0}'
 ```
 
-## Tests
-
-392 backend tests, all passing.
+### Tests
 
 ```powershell
-python -m pytest                        # 392 in total
-python -m pytest tests/unit             # 250 component tests
-python -m pytest tests/contract         # 103 contract and HTTP surface tests
+python -m pytest                        # 392: unit, contract, integration, scalability
+python -m pytest tests/contract         # 103 contract and HTTP surface
+python -m pytest tests/unit             # 250 component
 python -m pytest tests/integration      #  30 end-to-end scenarios
 python -m pytest tests/scalability -s   #   9 large-fleet fixture and cost measurements
 python -m pytest -m "not scalability"   # skip the large-fleet measurements
@@ -174,63 +152,104 @@ python -m pytest -m "not scalability"   # skip the large-fleet measurements
 
 ```powershell
 cd frontend
-npm test          # camera, geometry, interpolation, and scene rendering
+npm test          # camera, geometry, interpolation, scene rendering
 npm run typecheck
 ```
 
-The contract and integration suites run against the real runtime with no mocks.
+## Results
 
-## Performance, stated honestly
-
-`tests/scalability/` prints what the backend actually costs, and asserts its own
-budgets. Run it rather than trusting a number in a README:
+The integration suite runs the real runtime with no mocks, and the scalability
+suite prints its own numbers and asserts its own budgets. Re-run them rather
+than trusting this table:
 
 ```powershell
-python -m pytest tests/scalability -s
+python -m pytest tests/scalability -q -s
 ```
 
-**Conflict detection is exhaustive pairwise comparison.** For a fleet of *N*
-robots the right-of-way pass costs `N * (N - 1) / 2` trajectory comparisons. The
-code says so itself: *45 pairs at N=10, and remains the right choice for the
-MVP.* There is no broad-phase pruning and no spatial index in front of it.
+Measured on one developer machine at `5b958ca`:
 
-That is the honest shape of the scalability story. The subsystems are built and
-measured independently at 500 robots — world construction, route planning,
-trajectory generation, memory — and the fixture builds in tens of milliseconds.
-What does not yet scale is the pairwise conflict pass, which grows quadratically
-and is why the console demonstrates a small fleet rather than 500. Closing that
-gap is a broad-phase index over predicted trajectories, not a rewrite.
+| Measurement | Cost |
+|---|---|
+| Build a 500-robot fixture | ~29 ms |
+| Initialise a 500-robot runtime | ~32 ms |
+| Plan 50 routes | ~2.6 ms (0.05 ms/route) |
+| Generate 50 trajectories | ~4.7 ms |
+| Check 1,225 trajectory pairs (N=50) | ~22 ms |
+| Check 123,753 trajectory pairs (N=500) | ~2,210 ms |
+| 500-robot fixture memory | 1.3 MiB retained, 1.3 MiB peak |
+| Build a 500-robot coordinator | ~41 ms |
+| `CREATE_TASK` → negotiation → assignment → route | ~16 ms (505 events) |
+
+**The last row of that table is the honest one.** Conflict detection is an
+exhaustive pairwise pass: for *N* robots the right-of-way stage costs
+`N * (N - 1) / 2` trajectory comparisons. The module says so in its own
+docstring — *45 pairs at N=10, and remains the right choice for the MVP* — and
+there is no broad-phase pruning or spatial index in front of it. Every other
+subsystem is built for and measured at 500 robots. That one is quadratic, which
+is why the console demonstrates a small fleet rather than 500. Closing it is a
+broad-phase index over predicted trajectories, not a rewrite.
+
+Every figure above came out of a bug during development. A few of them, because
+they are the interesting ones:
+
+- A robot reported as `BLOCKED` kept changing cell. The move stage ignored the
+  safety hold and went on consuming the original trajectory timestamps, so a
+  held robot drove through whatever it was blocked by while only its status said
+  otherwise. A held robot now does not move at all, and on release its route is
+  re-timed from the cell it stopped on, so it resumes from a standstill instead
+  of teleporting.
+- Deadlock recovery was computed and published but never applied. The recovery
+  emitted `RECOVERY_STARTED` and returned, so the victim kept waiting and the
+  conflict stayed open: a detected deadlock never actually cleared. The chosen
+  robot is now given a real planned route to the nearest cell with room for two
+  robots, and its task route is replanned only once it has arrived. Retries
+  continue on later safety passes, because the first retreat plan can be
+  unplannable.
+- One call rebound a task while the robot was still standing in the passage, and
+  re-entered a commit from inside a commit. Arrival is now checked properly and
+  the inner call can decline to commit.
+- A robot's route detached from its body. Three overlapping strokes were drawn
+  per robot and the visible line came from the stale `RoutePlan` a replan leaves
+  behind. There is now one solid line per robot, taken from the committed timed
+  trail, with a guard that stops the line where the trail is stale rather than
+  cutting across the floor.
+- Clicking a cell to place a task started a cancel instead of a pick, and the
+  cell that was picked was then discarded. A finished run also looked frozen
+  rather than finished, and `RESET` left an empty fleet instead of restarting
+  the loaded scenario.
 
 ## Deployment
 
-**Status: not yet deployed.** There is no container image and no host
-configuration in this repository yet, and no live URL. The backend serves JSON
-only, so a deployment needs either a static host for the built console plus the
-API, or a single process that serves both. That work is outstanding, and this
-README will carry the URL when it exists.
+**Not yet deployed.** There is no container image and no host configuration in
+this repository, and no live URL. The backend serves JSON only, so a deployment
+needs either a single process that also serves the built console, or a static
+host for the console plus the API behind it. That work is outstanding.
 
-Do not describe a deployment as working until a live URL has been opened and
-exercised against this source revision.
+When it exists, the URL goes at the top of this file. Do not describe a
+deployment as working until a live URL has been opened and exercised against
+this source revision.
 
 ## Limitations
 
-Stated plainly, because a demo that overstates itself is worse than one that does
-not.
+Stated plainly, because a demo that overstates itself is worse than one that
+does not.
 
 - **This is a simulation, not hardware.** Every robot is a state machine. There
   is no physics, no actuator model, and no sensor noise. The coordination logic
   is real; the robots are not.
-- **Conflict detection is O(N²).** See the performance section. This is the
-  single biggest constraint on fleet size.
-- **The demo fleet is small.** The console starts with 10 mixed-size robots on a
-  40x25 floor. The fleet size is fixed in `backend/app/composition.py` and is not
-  yet configurable from the environment or the UI.
-- **No WebSocket transport.** The console polls. That is fine for a demo and
-  would not be fine at scale.
+- **Conflict detection is O(N²).** See Results. This is the single biggest
+  constraint on fleet size, and it is the reason the console does not show 500
+  robots today.
+- **The demo fleet is small and fixed.** The console starts with 10 mixed-size
+  robots on a 40 × 25 floor. The count lives in
+  `backend/app/composition.py` and is not configurable from the environment or
+  the UI.
+- **There is no WebSocket transport.** The console polls. Fine for a demo on one
+  screen; not fine at scale.
 - **Allocation ignores route reachability.** A robot can win a bid for work it
   then cannot route to.
-- **Safe holding and replanning are the newest code** and the least exercised by
-  anything outside their own tests.
+- **A finished run can look stalled.** A run with no work left holds rather than
+  announcing completion on every surface at once.
 
 ## Team
 
@@ -239,6 +258,20 @@ not.
 | Name | Role | Contribution |
 |---|---|---|
 | _TODO_ | _TODO_ | _TODO_ |
+
+## Repository layout
+
+| Path | Subsystem | What lives there |
+|---|---|---|
+| `backend/contracts/` | shared | Frozen models, events, commands, fixtures. Authoritative. |
+| `backend/negotiation/` | coordination | Eligibility, scoring, auction engine, reassignment. |
+| `backend/safety/` | safety | Pathfinding, collision, trajectory, right of way, deadlock, battery, failure, robot profiles. |
+| `backend/simulation/` | simulation | World and fleet construction, grid, layouts, scenarios, telemetry, the runtime. |
+| `backend/app/` | interface | HTTP surface, composition root, service lifecycle. |
+| `frontend/` | console | The operations console. |
+| `tests/contract/` | shared | Contract compliance for every published surface. |
+| `tests/integration/` | shared | End-to-end scenarios, run against the real runtime. |
+| `tests/scalability/` | shared | Large-fleet fixtures and the measured costs above. |
 
 ## Licence
 
