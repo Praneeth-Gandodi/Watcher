@@ -317,6 +317,74 @@ class FleetCoordinator:
             produced.extend(self._absorb(decision.events))
         return tuple(produced)
 
+    def randomize_assignments(
+        self, jitter: float = 0.6, seed: int | None = None
+    ) -> tuple[EventEnvelope[EventPayload], ...]:
+        """Re-run every open task's negotiation with randomised bid costs.
+
+        This is the console's random-allocation control, and it is a real
+        allocation round rather than a UI shuffle: bid randomisation is enabled
+        on the negotiation engine, every task that is not finished has its
+        current owner released, and each one is then negotiated again through
+        the normal path. Allocation still picks the cheapest bid, so a
+        different robot wins because it genuinely bid less this time.
+
+        Completed and cancelled tasks are left alone: their outcome is already
+        committed history. ``jitter`` goes straight to the scorer, which keeps
+        every cost a valid lower-is-better value. ``seed`` makes the round
+        reproducible, so the same seed yields the same winners.
+        """
+
+        self._engine.set_bid_jitter(jitter, seed)
+        released = self._runtime.release_open_assignments()
+        produced: list[EventEnvelope[EventPayload]] = list(released)
+        for event in released:
+            produced.extend(self._absorb((event,)))
+        for task in self._runtime.tasks():
+            if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+                continue
+            decision = self._negotiate(task)
+            produced.extend(decision.events)
+            produced.extend(self._absorb(decision.events))
+        return tuple(produced)
+
+    def set_bid_randomisation(self, enabled: bool, jitter: float = 0.6) -> None:
+        """Turn bid randomisation on or off for later rounds."""
+
+        self._engine.set_bid_jitter(jitter if enabled else 0.0)
+
+    def assign_task_to_robot(
+        self, task_id: str, robot_id: str
+    ) -> tuple[EventEnvelope[EventPayload], ...]:
+        """Bind one task to one chosen robot.
+
+        This is the console's manual assignment control. It runs the same
+        planning path an allocated task takes -- route request, route plan or
+        replan, then the safety pass -- so a hand-picked owner is held to the
+        same collision and battery rules as an allocated one. It only overrides
+        *who* takes the task, never whether the move is safe.
+
+        A task that already has an owner is migrated: the previous robot loses
+        its route and goes back to being idle, and the canonical
+        ``TASK_REASSIGNED`` event records the handover.
+        """
+
+        task = self._runtime.require_task(task_id)
+        previous = task.assigned_robot_id
+        if previous is not None and previous != robot_id:
+            self._runtime.release_task_from_robot(task_id, previous)
+        events = list(self._runtime.assign_task(task_id, robot_id))
+        if previous is not None and previous != robot_id:
+            self._runtime.publish_reassignment(
+                task_id,
+                previous,
+                robot_id,
+                reason="operator assigned this task by hand",
+                at_s=self._runtime.now_s,
+            )
+            events.extend(self._absorb(tuple(events)))
+        return tuple(events)
+
     # ------------------------------------------------------------------
     # Simulation driving
     # ------------------------------------------------------------------

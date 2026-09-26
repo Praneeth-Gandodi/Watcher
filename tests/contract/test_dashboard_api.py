@@ -9,9 +9,17 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from backend.app import composition
+from backend.app.api import RandomAssignmentRequest
 from backend.app.composition import build_coordinator, build_demo_coordinator
 from backend.app.main import app
+from backend.contracts.models import TaskStatus
+from backend.negotiation.scoring import (
+    DeterministicBidIdFactory,
+    calculate_bid_costs,
+    create_bid,
+)
 from backend.simulation.layouts import LAYOUT_NAMES, build_layout
 from backend.simulation.scenarios import (
     SCENARIO_NAMES,
@@ -424,3 +432,167 @@ def test_health_is_unchanged_by_the_new_endpoints(client) -> None:
         "service": "watcher-backend",
         "version": "0.1.0",
     }
+
+
+# ----------------------------------------------------------------------
+# random assignment: a real allocation round, not a UI shuffle
+# ----------------------------------------------------------------------
+
+
+def _owners(client) -> list[str | None]:
+    return [task["assigned_robot_id"] for task in client.get(f"{PREFIX}/tasks").json()]
+
+
+def _random(client, **body) -> object:
+    return client.post(f"{PREFIX}/simulation/random-assignment", json=body)
+
+
+def test_random_assignment_awards_every_open_task(client) -> None:
+    client.post(f"{PREFIX}/simulation/dispatch", json={})
+    assert all(owner is not None for owner in _owners(client))
+
+    response = _random(client, jitter=0.9)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] is True
+    assert body["command_type"] == "RANDOM_ASSIGNMENT"
+    # A round that re-bids must actually produce the canonical bid events.
+    assert "BID_SUBMITTED" in body["produced_event_types"]
+    assert "TASK_ASSIGNED" in body["produced_event_types"]
+    # Every open task still has exactly one owner afterwards.
+    owners = _owners(client)
+    assert all(owner is not None for owner in owners)
+    assert len(set(owners)) == len(owners), "a robot cannot own two tasks"
+
+
+def test_zero_jitter_reproduces_the_deterministic_allocation(client) -> None:
+    client.post(f"{PREFIX}/simulation/dispatch", json={})
+    deterministic = _owners(client)
+
+    _random(client, jitter=0.0)
+
+    assert _owners(client) == deterministic
+
+
+def test_a_seed_replays_the_same_random_round(client) -> None:
+    _random(client, jitter=0.9, seed=4242)
+    first = _owners(client)
+
+    _random(client, jitter=0.9, seed=4242)
+
+    assert _owners(client) == first
+
+
+def test_a_different_seed_can_produce_a_different_allocation(client) -> None:
+    _random(client, jitter=2.0, seed=1)
+    first = _owners(client)
+
+    outcomes = set()
+    for seed in range(2, 12):
+        _random(client, jitter=2.0, seed=seed)
+        outcomes.add(tuple(_owners(client)))
+
+    assert len(outcomes) > 1, "randomised rounds should not all agree"
+
+
+def test_completed_tasks_are_never_reassigned(client) -> None:
+    client.post(f"{PREFIX}/simulation/dispatch", json={})
+    client.post(f"{PREFIX}/simulation/advance", params={"ticks": 400})
+    tasks = client.get(f"{PREFIX}/tasks").json()
+    completed = [task for task in tasks if task["status"] == "completed"]
+    if not completed:
+        pytest.skip("the demo scenario completed no task in 400 ticks")
+    before = {task["task_id"]: task["assigned_robot_id"] for task in completed}
+
+    _random(client, jitter=1.5)
+
+    after = {
+        task["task_id"]: task["assigned_robot_id"]
+        for task in client.get(f"{PREFIX}/tasks").json()
+        if task["task_id"] in before
+    }
+    assert after == before
+
+
+@pytest.mark.parametrize("jitter", [-0.1, 5.1, "wide", [0.5]])
+def test_an_invalid_jitter_is_rejected(client, jitter) -> None:
+    assert _random(client, jitter=jitter).status_code == 422
+
+
+@pytest.mark.parametrize("jitter", [0.0, 0.75, 5.0])
+def test_a_valid_jitter_is_accepted(client, jitter) -> None:
+    assert _random(client, jitter=jitter).status_code == 200
+
+
+@pytest.mark.parametrize("jitter", [float("inf"), float("nan"), -0.001])
+def test_jitter_must_be_a_finite_non_negative_number(jitter) -> None:
+    # `inf` and `nan` cannot go over JSON, so the contract is checked directly.
+    with pytest.raises(ValidationError):
+        RandomAssignmentRequest(jitter=jitter)
+
+
+def test_jitter_only_blurs_the_distance_term() -> None:
+    spec = spec_for("normal")
+    blueprint, tasks = build_scenario_fleet(spec)
+    robot = blueprint.robots[0]
+    task = tasks[0]
+
+    plain = calculate_bid_costs(robot, task)
+    blurred = calculate_bid_costs(robot, task, jitter=1.0)
+
+    # Battery and workload are untouched; only distance moves, and never down.
+    assert blurred.battery_cost == plain.battery_cost
+    assert blurred.workload_cost == plain.workload_cost
+    assert blurred.distance_cost >= plain.distance_cost
+    assert blurred.total_cost == (
+        blurred.distance_cost + blurred.battery_cost + blurred.workload_cost
+    )
+
+
+def test_a_randomised_bid_is_still_a_valid_canonical_bid() -> None:
+    spec = spec_for("normal")
+    blueprint, tasks = build_scenario_fleet(spec)
+    bid = create_bid(
+        tasks[0],
+        blueprint.robots[0],
+        observed_at_s=1.0,
+        valid_until_s=6.0,
+        id_factory=DeterministicBidIdFactory(),
+        jitter=3.0,
+    )
+    assert bid.total_cost >= bid.distance_cost
+    assert bid.total_cost == bid.distance_cost + bid.battery_cost + bid.workload_cost
+    assert bid.valid_until_s > bid.created_at_s
+
+
+def test_release_open_assignments_frees_the_robots(client) -> None:
+    client.post(f"{PREFIX}/simulation/dispatch", json={})
+    runtime = client.app.dependency_overrides[composition.get_coordinator]().runtime
+    assert all(
+        robot["current_task_id"] is not None
+        for robot in client.get(f"{PREFIX}/robots").json()
+        if robot["status"] == "active"
+    )
+
+    runtime.release_open_assignments()
+
+    tasks = client.get(f"{PREFIX}/tasks").json()
+    assert all(task["status"] == "pending" for task in tasks)
+    assert all(task["assigned_robot_id"] is None for task in tasks)
+    # A freed robot is idle and holds no task, so it is eligible again.
+    for robot in client.get(f"{PREFIX}/robots").json():
+        if robot["status"] in {"idle", "active"}:
+            assert robot["current_task_id"] is None
+
+
+def test_release_leaves_completed_tasks_alone(coordinator) -> None:
+    runtime = coordinator.runtime
+    coordinator.dispatch_pending_tasks()
+    task_id = runtime.tasks()[0].task_id
+
+    runtime.release_open_assignments()
+
+    released = {task.task_id: task for task in runtime.tasks()}
+    assert released[task_id].status is TaskStatus.PENDING
+    assert released[task_id].assigned_robot_id is None

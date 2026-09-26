@@ -122,6 +122,16 @@ class ResetSimulationRequest(BaseModel):
     seed: int = 2026
 
 
+class RandomAssignmentRequest(BaseModel):
+    """How much to blur the bid distance term for a randomised round."""
+
+    model_config = ConfigDict(extra="forbid")
+    #: ``0`` is the deterministic allocation; larger values blur it further.
+    jitter: float = Field(default=0.75, ge=0, le=5, allow_inf_nan=False)
+    #: Replaying a seed reproduces the same bids and the same winners.
+    seed: int | None = None
+
+
 class SimulationSpeedRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     multiplier: float
@@ -581,6 +591,71 @@ async def post_dispatch(coordinator: Coordinator) -> CommandResponse:
     return CommandResponse(
         accepted=True,
         command_type="DISPATCH",
+        produced_event_types=tuple(event.event_type.value for event in events),
+        last_event_sequence=snapshot.last_event_sequence,
+        revision=snapshot.revision,
+        simulation_time_s=snapshot.simulation_time_s,
+    )
+
+
+class ManualAssignmentRequest(BaseModel):
+    """Bind one task to one chosen robot."""
+
+    model_config = ConfigDict(extra="forbid")
+    task_id: str
+    robot_id: str
+
+
+@router.post("/tasks/assign", response_model=CommandResponse)
+async def post_task_assignment(
+    coordinator: Coordinator,
+    request: ManualAssignmentRequest,
+) -> CommandResponse:
+    """Assign a task to a specific robot from the console.
+
+    The operator picks the owner, the backend still does the work: the route is
+    requested, planned or replanned, and the safety pass runs before the robot
+    is allowed to move. A task that already had an owner is migrated and the
+    canonical ``TASK_REASSIGNED`` event is published.
+    """
+
+    try:
+        events = coordinator.assign_task_to_robot(request.task_id, request.robot_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    snapshot = coordinator.snapshot()
+    return CommandResponse(
+        accepted=True,
+        command_type="TASK_ASSIGNED",
+        produced_event_types=tuple(event.event_type.value for event in events),
+        last_event_sequence=snapshot.last_event_sequence,
+        revision=snapshot.revision,
+        simulation_time_s=snapshot.simulation_time_s,
+    )
+
+
+@router.post("/simulation/random-assignment", response_model=CommandResponse)
+async def post_random_assignment(
+    coordinator: Coordinator,
+    request: RandomAssignmentRequest | None = None,
+) -> CommandResponse:
+    """Re-run every open task's negotiation with randomised bid costs.
+
+    The console's random-allocation control. This is a real allocation round:
+    open tasks lose their current owner, bids are collected again with a
+    randomised distance term, and allocation still picks the cheapest bid. A
+    different robot therefore wins because it genuinely bid less this time,
+    rather than because the UI relabelled anything.
+    """
+
+    body = request or RandomAssignmentRequest()
+    events = coordinator.randomize_assignments(body.jitter, body.seed)
+    snapshot = coordinator.snapshot()
+    return CommandResponse(
+        accepted=True,
+        command_type="RANDOM_ASSIGNMENT",
         produced_event_types=tuple(event.event_type.value for event in events),
         last_event_sequence=snapshot.last_event_sequence,
         revision=snapshot.revision,

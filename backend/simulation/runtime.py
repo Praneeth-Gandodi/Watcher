@@ -138,6 +138,8 @@ EVENT_PRODUCER = "agent-2-safety"
 _EVENT_NAMESPACE = UUID("6f2c1f4e-2a2f-5a4a-9a0f-2f3d1b7c4e55")
 _DEFAULT_COMMUNICATION_TIMEOUT_S = 3.0
 _DEFAULT_TICK_RATE_HZ = 10.0
+#: The length of one fixed tick, used when a held route is re-timed.
+_DEFAULT_TICK_S = 1.0 / _DEFAULT_TICK_RATE_HZ
 
 
 def _derived_uuid(kind: str, *parts: str) -> UUID:
@@ -299,6 +301,10 @@ class RobotState:
     cells_travelled: int = 0
     charged_cells: int = 0
     last_contact_at_s: float = 0.0
+    #: Set while the robot is backing off a one-cell passage to let another
+    #: robot past. The retreat is a real planned route, not a pause: the robot
+    #: moves aside and then resumes its own task.
+    retreating_since_s: float | None = None
 
     @property
     def robot_id(self) -> str:
@@ -810,6 +816,121 @@ class SimulationRuntime:
         )
         return created + self._commit(self._clock.now_s)
 
+    def require_task(self, task_id: str) -> Task:
+        """Return a registered task, or raise ``KeyError``."""
+
+        task = self._tasks.get(task_id)
+        if task is None:
+            raise KeyError(f"unknown task {task_id!r}")
+        return task
+
+    def release_task_from_robot(self, task_id: str, robot_id: str) -> None:
+        """Free one robot from one task, leaving the task itself registered.
+
+        Used when work is migrated away from a robot by hand or by recovery, so
+        the robot stops being eligible-for-nothing and becomes bid-eligible
+        again.
+        """
+
+        state = self._robots.get(robot_id)
+        if state is None or state.task_id != task_id:
+            return
+        self._robots[robot_id] = replace(
+            state,
+            robot=evolve_robot(
+                state.robot,
+                current_task_id=None,
+                workload=0,
+                last_updated_at_s=self._clock.now_s,
+            ),
+            task_id=None,
+            route=None,
+            trajectory=(),
+            cells_travelled=0,
+            blocked_since_s=None,
+            resume_after_s=None,
+        )
+        self._mark_safety_dirty()
+
+    def publish_reassignment(
+        self,
+        task_id: str,
+        previous_robot_id: str,
+        new_robot_id: str,
+        *,
+        reason: str,
+        at_s: float | None = None,
+    ) -> EventEnvelope[TaskReassignedPayload]:
+        """Publish the canonical record of a task changing hands."""
+
+        when = self._clock.now_s if at_s is None else at_s
+        return self._emit(
+            TaskReassignedPayload(
+                task_id=task_id,
+                previous_robot_id=previous_robot_id,
+                new_robot_id=new_robot_id,
+                reason=reason,
+            ),
+            when,
+            correlation_id=task_id,
+        )
+
+    def release_open_assignments(self) -> tuple[EventEnvelope[EventPayload], ...]:
+        """Return every unfinished task to ``pending`` and clear its route.
+
+        A task that already completed, or that was cancelled, is committed
+        history and is left untouched. Everything else goes back to the pool:
+        the owner loses its route and trajectory, so a fresh negotiation round
+        can bind it to a different robot. This publishes no event of its own --
+        it is a precondition for another round, and the events that follow
+        describe the new owner.
+        """
+
+        released: list[EventEnvelope[EventPayload]] = []
+        for task_id, task in list(self._tasks.items()):
+            if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+                continue
+            self._tasks[task_id] = task.model_copy(
+                update={
+                    "status": TaskStatus.PENDING,
+                    "assigned_robot_id": None,
+                }
+            )
+            for robot_id in list(self._robots):
+                state = self._robots[robot_id]
+                if state.task_id != task_id:
+                    continue
+                # The canonical `Robot` has to be released too: a robot is only
+                # eligible for a new bid when it is idle and holds no task.
+                if state.robot.current_task_id == task_id:
+                    self._robots[robot_id] = replace(
+                        state,
+                        robot=state.robot.model_copy(
+                            update={
+                                "current_task_id": None,
+                                "status": RobotStatus.IDLE,
+                                "workload": 0,
+                            }
+                        ),
+                        task_id=None,
+                        route=None,
+                        trajectory=(),
+                        cells_travelled=0,
+                        resume_after_s=None,
+                    )
+                    continue
+                self._robots[robot_id] = replace(
+                    state,
+                    task_id=None,
+                    route=None,
+                    trajectory=(),
+                    cells_travelled=0,
+                    resume_after_s=None,
+                )
+        self._mark_safety_dirty()
+        self._commit(self._clock.now_s)
+        return tuple(released)
+
     def assign_task(
         self,
         task_id: str,
@@ -1023,6 +1144,13 @@ class SimulationRuntime:
         for state in self.robot_states():
             if not state.trajectory or state.is_parked:
                 continue
+            if self._is_held(state, observed_at_s):
+                # The safety layer is holding this robot, so it does not move at
+                # all. Without this a blocked robot kept consuming its original
+                # trajectory timestamps and drove straight through whatever it
+                # was blocked by, while only its status said otherwise.
+                self._hold_state(state, observed_at_s)
+                continue
             point = point_at_time(state.trajectory, observed_at_s)
             if point is None or point.cell == state.current_cell:
                 continue
@@ -1034,6 +1162,88 @@ class SimulationRuntime:
             self._advance_state(state, point, observed_at_s)
         events.extend(self._complete_arrivals(observed_at_s))
         return events
+
+    @staticmethod
+    def _is_held(state: RobotState, observed_at_s: float) -> bool:
+        """Whether the safety layer is currently holding this robot still.
+
+        A hold with no release time lasts until the conflict is resolved; a hold
+        with one lasts until that time.
+        """
+
+        if state.blocked_since_s is None:
+            return False
+        if state.resume_after_s is None:
+            return True
+        return observed_at_s < state.resume_after_s
+
+    def _hold_state(self, state: RobotState, observed_at_s: float) -> None:
+        """Keep a held robot exactly where it is, and say so."""
+
+        if state.robot.status is RobotStatus.FAILED:
+            return
+        self._robots[state.robot_id] = replace(
+            state,
+            robot=evolve_robot(
+                state.robot,
+                status=RobotStatus.BLOCKED,
+                last_updated_at_s=observed_at_s,
+            ),
+        )
+
+    def _release_hold(self, robot_id: str, observed_at_s: float) -> None:
+        """End a hold and re-time the rest of the route from where it stopped.
+
+        The robot stopped at ``current_cell``, so the remaining placements are
+        pushed forward by the length of the hold and a stationary point is put
+        at the cell it waited on. That makes it resume from a standstill instead
+        of teleporting to wherever the original timestamps now point.
+        """
+
+        state = self._require_state(robot_id)
+        if state.blocked_since_s is None and state.resume_after_s is None:
+            return
+        remaining = [point for point in state.trajectory if point.cell != state.current_cell]
+        held_for = max(0.0, observed_at_s - (state.blocked_since_s or observed_at_s))
+        if not remaining or held_for <= 0.0:
+            self._robots[robot_id] = replace(
+                state, blocked_since_s=None, resume_after_s=None
+            )
+            return
+        step = self._nominal_step(state)
+        first = remaining[0]
+        delay = (observed_at_s + step) - first.timestamp_s
+        held = TrajectoryPoint(
+            cell=state.current_cell,
+            timestamp_s=observed_at_s,
+            occupied_cells=self._grid.footprint_cells(
+                state.current_cell,
+                state.profile.width_cells,
+                state.profile.height_cells,
+            ),
+        )
+        self._robots[robot_id] = replace(
+            state,
+            trajectory=(
+                held,
+                *(
+                    replace(point, timestamp_s=point.timestamp_s + delay)
+                    for point in remaining
+                ),
+            ),
+            blocked_since_s=None,
+            resume_after_s=None,
+        )
+
+    @staticmethod
+    def _nominal_step(state: RobotState) -> float:
+        """The time one cell normally takes, used when re-timing a route."""
+
+        if len(state.trajectory) >= 2:
+            gap = state.trajectory[1].timestamp_s - state.trajectory[0].timestamp_s
+            if gap > 0:
+                return gap
+        return _DEFAULT_TICK_S
 
     def _advance_state(
         self,
@@ -1554,10 +1764,10 @@ class SimulationRuntime:
             del self._open_conflict_by_pair[pair]
         for robot_id in record.robot_ids:
             state = self._require_state(robot_id)
-            if state.blocked_since_s is not None:
-                self._robots[robot_id] = replace(
-                    state, blocked_since_s=None, resume_after_s=None
-                )
+            if state.blocked_since_s is not None or state.resume_after_s is not None:
+                # The way is clear, so the held robot is released and resumes
+                # from the cell it waited on.
+                self._release_hold(robot_id, self._clock.now_s)
 
     def build_yield_recovery(
         self,
@@ -1661,7 +1871,44 @@ class SimulationRuntime:
                     correlation_id=report.deadlock_id,
                 )
             )
+            # Apply the recovery. Publishing the action on its own left the
+            # cycle in place forever: the victim kept waiting and the conflict
+            # stayed open, so a detected deadlock never actually cleared.
+            # The canonical `RECOVERY_STARTED` event above is the report; the
+            # state change below is the fix, which needs no new event type.
+            self._apply_deadlock_recovery(recovery.robot_id, observed_at_s)
         return events
+
+    def _apply_deadlock_recovery(self, robot_id: str, observed_at_s: float) -> None:
+        """Release the chosen robot and close the conflicts that held it.
+
+        The chosen robot stops waiting: its hold is ended, so its remaining route
+        is re-timed from the cell it stood on, and every open conflict it was
+        part of is resolved. The other robots in the cycle are therefore freed to
+        move again, which is what breaks the cycle rather than only describing
+        it.
+        """
+
+        self._release_hold(robot_id, observed_at_s)
+        for conflict in list(self._conflicts.values()):
+            if conflict.status is not ResolutionStatus.OPEN:
+                continue
+            if robot_id in conflict.robot_ids:
+                self._resolve_conflict(conflict)
+        # Every other robot in the cycle is now free of any open conflict, so it
+        # is released too rather than left waiting on a conflict that is closed.
+        for other_id, state in list(self._robots.items()):
+            if other_id == robot_id or state.blocked_since_s is None:
+                continue
+            still_conflicted = any(
+                conflict_id in self._conflicts
+                and self._conflicts[conflict_id].status is ResolutionStatus.OPEN
+                and other_id in self._conflicts[conflict_id].robot_ids
+                for conflict_id in self._open_conflict_by_pair.values()
+            )
+            if not still_conflicted:
+                self._release_hold(other_id, observed_at_s)
+        self._mark_safety_dirty()
 
     # ------------------------------------------------------------------
     # Metrics and projection

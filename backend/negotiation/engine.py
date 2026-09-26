@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import isfinite
+from random import Random
 
 from backend.allocation.allocator import create_assignment, select_winning_bid
 from backend.contracts.events import (
@@ -60,11 +61,37 @@ class DefaultNegotiationEngine:
         *,
         bid_validity_s: float = 5.0,
         bid_id_factory: BidIdFactory | None = None,
+        bid_jitter: float = 0.0,
     ) -> None:
         if not isfinite(bid_validity_s) or bid_validity_s <= 0:
             raise ValueError("bid_validity_s must be positive")
+        if not isfinite(bid_jitter) or bid_jitter < 0:
+            raise ValueError("bid_jitter must be a non-negative finite number")
         self._bid_validity_s = bid_validity_s
         self._bid_id_factory = bid_id_factory or DeterministicBidIdFactory()
+        #: Randomisation added to the distance term of every bid. ``0`` keeps
+        #: scoring deterministic; a positive value lets a round be repeated
+        #: with a different winner without changing who is eligible.
+        self._bid_jitter = bid_jitter
+        self._rng = Random()
+
+    @property
+    def bid_jitter(self) -> float:
+        return self._bid_jitter
+
+    def set_bid_jitter(self, jitter: float, seed: int | None = None) -> None:
+        """Enable, change, or disable bid randomisation.
+
+        ``seed`` reseeds the generator, so a randomised round can be replayed
+        exactly: the same seed yields the same bids and therefore the same
+        winners.
+        """
+
+        if not isfinite(jitter) or jitter < 0:
+            raise ValueError("bid_jitter must be a non-negative finite number")
+        self._bid_jitter = jitter
+        if seed is not None:
+            self._rng = Random(seed)
 
     def prepare(
         self,
@@ -90,6 +117,8 @@ class DefaultNegotiationEngine:
                 observed_at_s,
                 expires_at_s,
                 self._bid_id_factory,
+                self._bid_jitter,
+                self._rng,
             )
             for robot in candidates
         )

@@ -255,12 +255,15 @@ def crossing_layout(columns: int = 40, rows: int = 25) -> Layout:
 
 
 def deadlock_layout(columns: int = 40, rows: int = 25) -> Layout:
-    """A ring corridor with a closed centre: mutual waiting is easy to reach.
+    """A cross-aisle warehouse pinched down to a single-cell throat.
 
-    A single-width ring means robots entering from four directions meet in the
-    middle of the loop. A grid of one-cell lanes creates a directed cycle of
-    waiting, which is exactly the shape the backend's wait-graph detector
-    recognises.
+    The previous ring had a bypass everywhere, so two robots meeting in it
+    simply drove around each other and the wait graph never closed a cycle.
+    This layout keeps the floor drivable on both axes but narrows one aisle to a
+    single cell. Two robots travelling in opposite directions along that aisle
+    cannot pass, so they block each other face to face -- the smallest possible
+    wait cycle, and exactly the shape the detector recognises. The other aisle
+    stays open, so every cell remains reachable and nothing is stranded.
     """
 
     obstacles: list[tuple[int, int]] = [
@@ -270,36 +273,46 @@ def deadlock_layout(columns: int = 40, rows: int = 25) -> Layout:
         (columns - 1, rows - 1),
     ]
     centre_x, centre_y = columns // 2, rows // 2
-    inner = 4
 
-    # Solid block in the middle: only the surrounding ring is drivable. A small
-    # floor keeps a thinner core so the ring is still wide enough to drive.
-    core = inner if (columns >= 30 and rows >= 18) else inner - 1
-    for column in range(centre_x - inner, centre_x + inner + 1):
-        for row in range(centre_y - core, centre_y + core + 1):
-            if abs(column - centre_x) == inner or abs(row - centre_y) == core:
-                continue  # the ring itself stays open
-            obstacles.append((column, row))
+    # Everything is solid except a two-cell-wide cross: one horizontal aisle and
+    # one vertical aisle. Two lanes are enough to spawn a fleet and to let
+    # robots pass, so the only forced conflict is the one designed below.
+    for column in range(columns):
+        for row in range(rows):
+            in_horizontal = abs(row - centre_y) <= 1
+            in_vertical = abs(column - centre_x) <= 1
+            if not (in_horizontal or in_vertical):
+                obstacles.append((column, row))
 
-    # Four one-cell approach stubs that all feed the same ring.
-    for offset in (inner - 1, -(inner - 1)):
-        obstacles.append((centre_x + offset, centre_y + inner + 1))
-        obstacles.append((centre_x + offset, centre_y - inner - 1))
-        obstacles.append((centre_x + inner + 1, centre_y + offset))
-        obstacles.append((centre_x - inner - 1, centre_y + offset))
+    # The throat: on the eastern arm, close the lower lane for a few cells so
+    # the aisle is exactly one cell wide. Robots coming from opposite directions
+    # have to meet here.
+    throat_start = centre_x + 3
+    throat_end = min(centre_x + 7, columns - 2)
+    for column in range(throat_start, throat_end + 1):
+        obstacles.append((column, centre_y + 1))
+
+    # Close the aisle ends so the cross is a corridor rather than a crossroads:
+    # a robot cannot simply leave the floor and come back around the throat.
+    for column in range(columns):
+        if abs(column - centre_x) <= 1:
+            continue
+        obstacles.append((column, 0))
+        obstacles.append((column, rows - 1))
+    for row in range(rows):
+        if abs(row - centre_y) <= 1:
+            continue
+        obstacles.append((0, row))
+        obstacles.append((columns - 1, row))
 
     return Layout(
         name="deadlock",
         columns=columns,
         rows=rows,
         obstacles=_clean(tuple(obstacles), columns, rows),
-        charging=_clean(((2, 1), (columns - 3, 1)), columns, rows),
-        workstations=_clean(((1, centre_y), (columns - 2, centre_y)), columns, rows),
-        resources=_clean(
-            ((centre_x, centre_y - inner - 2), (centre_x, centre_y + inner + 2)),
-            columns,
-            rows,
-        ),
+        charging=_clean(((throat_start + 1, centre_y),), columns, rows),
+        workstations=_clean(((2, centre_y), (columns - 3, centre_y)), columns, rows),
+        resources=_clean(((centre_x, 2), (centre_x, rows - 3)), columns, rows),
     )
 
 
