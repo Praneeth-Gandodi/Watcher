@@ -13,6 +13,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { ControlBar, type DisplayKey } from "./components/ControlBar";
+import { Divider } from "./components/Divider";
 import { EventLogPanel } from "./components/EventLogPanel";
 import { FleetOverview } from "./components/FleetOverview";
 import { NegotiationPanel } from "./components/NegotiationPanel";
@@ -57,6 +58,10 @@ export function App() {
   // The cell chosen on the map, shared by the canvas and the task form so a pick
   // made on one surface is the cell the other one submits.
   const [pickedCell, setPickedCell] = useState<{ cellX: number; cellY: number } | null>(null);
+  // Resizable layout. Both are read by CSS custom properties, so dragging a
+  // divider writes one number instead of re-rendering every panel.
+  const [sideWidth, setSideWidth] = useState(360);
+  const [dockHeight, setDockHeight] = useState(260);
   const [tab, setTab] = useState<BottomTab>("events");
 
   const selectedRobot = useMemo(
@@ -157,7 +162,7 @@ export function App() {
         onPlaceTask={beginPlacing}
       />
 
-      <main className="workspace">
+      <main className="workspace" style={{ ["--side-width" as string]: `${sideWidth}px` }}>
         <section className="map-pane">
           <SimulationCanvas
             snapshot={sim.snapshot}
@@ -176,6 +181,16 @@ export function App() {
             {...display}
           />
         </section>
+
+        <Divider
+          orientation="vertical"
+          className="side-resize"
+          label="Side panel width"
+          current={() => sideWidth}
+          onResize={setSideWidth}
+          min={280}
+          max={620}
+        />
 
         <aside className="side">
           <Panel title="UNIT INSPECTOR" className="panel--inspector">
@@ -203,7 +218,18 @@ export function App() {
         </aside>
       </main>
 
-      <section className="dock">
+      <Divider
+        orientation="horizontal"
+        className="dock-resize"
+        label="Bottom dock height"
+        direction={-1}
+        current={() => dockHeight}
+        onResize={setDockHeight}
+        min={140}
+        max={620}
+      />
+
+      <section className="dock" style={{ ["--dock-height" as string]: `${dockHeight}px` }}>
         <nav className="dock-tabs" role="tablist">
           {(
             [

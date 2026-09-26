@@ -73,11 +73,14 @@ def warehouse_layout(columns: int = 40, rows: int = 25) -> Layout:
       through specific gaps
     * a vertical spine wall splitting the floor in two, with a **two-cell**
       doorway so every robot size can cross and the whole floor stays usable
-    * a one-cell *express corridor* in each half, a shortcut that only robots
-      with a one-cell height can take. A 2x2 or 3x2 genuinely cannot enter it,
-      which is what makes robot footprint visible on the map
-    * dead-end storage aisles in the upper right
+    * pass-through racking rows in one quadrant, open at both ends
     * an open plaza in the middle for crossings and negotiations
+
+    Every aisle and doorway is deliberately pass-through. A closed end is a trap:
+    a robot can drive in, meet another robot coming the other way, and have
+    nowhere to go, which shows up as a task that never completes. A layout for a
+    default demo therefore has no dead ends at all -- obstacles here are walls
+    with gaps, never pockets.
     """
 
     obstacles: list[tuple[int, int]] = []
@@ -85,11 +88,12 @@ def warehouse_layout(columns: int = 40, rows: int = 25) -> Layout:
     workstations: list[tuple[int, int]] = []
     resources: list[tuple[int, int]] = []
 
-    # Corner posts fence the world without walling off the usable floor.
-    obstacles.append((0, 0))
-    obstacles.append((columns - 1, 0))
-    obstacles.append((0, rows - 1))
-    obstacles.append((columns - 1, rows - 1))
+    # Corner posts fence the world without walling off the usable floor. The
+    # two cells beside each post are closed as well, so a robot can never end up
+    # in a corner pocket with a single way out.
+    for post_x, post_y in ((0, 0), (columns - 1, 0), (0, rows - 1), (columns - 1, rows - 1)):
+        for dx, dy in ((0, 0), (1, 0), (0, 1), (-1, 0), (0, -1)):
+            obstacles.append((post_x + dx, post_y + dy))
 
     # Charging bay along the bottom: a row of pads with a service gap.
     for column in range(3, columns - 3, 5):
@@ -107,14 +111,16 @@ def warehouse_layout(columns: int = 40, rows: int = 25) -> Layout:
             continue
         obstacles.append((column, racking_a))
 
-    # Long racking wall B just below A, so the gap between them is a real
-    # corridor and the doorways do not line up into a single highway. On a small
-    # floor the gap would be too thin to be drivable, so it is skipped.
+    # Long racking wall B below A, so the gap between them is a real corridor
+    # and the doorways do not line up into a single highway. The gap is **two**
+    # rows: a one-row corridor between two walls is a trap, because a robot in
+    # it can be boxed in and cannot pass anything coming the other way. On a
+    # small floor there is no room for two rows of clearance, so it is skipped.
     if rows >= 18:
         for column in range(2, columns - 2):
             if column % 13 in (0, 1, 2):
                 continue
-            obstacles.append((column, racking_a + 2))
+            obstacles.append((column, racking_a + 3))
 
     # Vertical spine with a two-cell doorway: every footprint can cross it.
     spine = columns // 2
@@ -124,34 +130,31 @@ def warehouse_layout(columns: int = 40, rows: int = 25) -> Layout:
             continue
         obstacles.append((spine, row))
 
-    # One-cell express corridor: a vertical shortcut walled on both sides. Only
-    # robots with a one-cell height can use it, which is what makes footprint
-    # visibly matter. It needs room to be a shortcut at all, so small floors
-    # keep an open middle instead.
-    if columns >= 30 and rows >= 18:
-        express = spine - 5
-        for row in range(2, rows - 2):
-            obstacles.append((express - 1, row))
-            obstacles.append((express + 1, row))
-
-    # Two dead-end storage aisles in the upper right quadrant. Kept few and
-    # shallow so they add warehouse character without fragmenting the floor.
+    # Racking rows in the lower right quadrant. Every row is open at BOTH ends,
+    # so each one is a pass-through lane rather than a dead end: a robot that
+    # enters can always drive out, even if another robot is occupying the cell
+    # behind it. The previous aisle here was closed at one end, which is a trap
+    # -- a robot could nose in, meet another robot, and have no way out.
     if rows >= 18:
-        aisle_top = rows - 3
         for index in range(2):
-            aisle_row = aisle_top - index * 2
-            for column in range(spine + 4, columns - 3):
+            aisle_row = rows - 3 - index * 2
+            start = spine + 4
+            stop = columns - 3
+            for column in range(start, stop):
+                # Leave a doorway at the far end of every row as well as the
+                # near one, so the rows cannot chain into a dead end.
+                if column == start or column == stop - 1:
+                    continue
                 obstacles.append((column, aisle_row))
-        obstacles.append((spine + 6, aisle_top))
-        for row in range(aisle_top - 2, aisle_top + 1):
-            obstacles.append((spine + 6, row))
 
     # Workstation bay on the left, facing the plaza.
     for row in range(doorway_a - 1, doorway_a + 2):
         workstations.append((2, row))
     obstacles.append((1, doorway_a))
 
-    # Resource pallets in the open plaza, sparse enough to stay drivable.
+    # Resource pallets in the open plaza, sparse enough to stay drivable. They
+    # sit in open floor rather than against a wall, so a robot that stops on one
+    # can always be driven around.
     resources.append((spine - 3, doorway_a + 4))
     resources.append((spine + 3, doorway_a - 4))
     resources.append((max(3, columns // 4), doorway_a - 1))

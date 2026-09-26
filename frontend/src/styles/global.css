@@ -108,7 +108,8 @@ body::after {
 
 .console {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) minmax(180px, 30vh);
+  /* masthead, status, controls, workspace, divider, dock */
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
   height: 100%;
   gap: 1px;
   background: var(--grid);
@@ -439,8 +440,9 @@ body::after {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 1px;
+  /* The side column is draggable; the default matches the first render. */
+  grid-template-columns: minmax(0, 1fr) auto var(--side-width, 360px);
+  gap: 0;
   min-height: 0;
   background: var(--grid);
 }
@@ -1014,6 +1016,8 @@ body::after {
 .dock {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  /* Draggable height, so a long event log can take most of the screen. */
+  height: var(--dock-height, 260px);
   min-height: 0;
   background: var(--panel);
   border-top: 1px solid var(--grid);
@@ -1276,8 +1280,15 @@ body::after {
 
 .task-panel {
   display: grid;
+  /* The form is a fixed header; the table takes the rest and scrolls itself, so
+     a long task list does not push the form out of reach. */
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
-  align-content: start;
+  min-height: 0;
+}
+
+.task-form {
+  grid-template-rows: none;
 }
 
 .task-form {
@@ -1327,42 +1338,204 @@ body::after {
   color: var(--failure);
 }
 
+/* ---------------------------------------------------------------- resizable */
+
+/*
+ * A draggable column divider.
+ *
+ * The handle is a real element with a pointer capture, so a fast drag does not
+ * drop the gesture, and the width it writes is clamped per column. Widths live
+ * in a CSS custom property on the strip, so the header and every row stay
+ * aligned from one source instead of two grids that can drift apart.
+ */
+.col-resizer {
+  flex: 0 0 auto;
+  width: 7px;
+  margin: 0 -3px;
+  cursor: col-resize;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  touch-action: none;
+}
+
+.col-resizer::after {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 100%;
+  margin: 0 auto;
+  background: var(--grid);
+}
+
+.col-resizer:hover::after,
+.col-resizer--active::after {
+  width: 2px;
+  background: var(--selected);
+}
+
+.col-resizer:focus-visible {
+  outline: 1px solid var(--selected);
+}
+
+.dock-resize {
+  height: 5px;
+  cursor: row-resize;
+  background: var(--grid);
+  border-top: 1px solid var(--grid);
+  border-bottom: 1px solid var(--grid);
+  touch-action: none;
+}
+
+.dock-resize:hover,
+.dock-resize--active {
+  background: var(--selected);
+}
+
+.side-resize {
+  width: 5px;
+  cursor: col-resize;
+  background: var(--grid);
+  border-left: 1px solid var(--grid);
+  border-right: 1px solid var(--grid);
+  touch-action: none;
+}
+
+.side-resize:hover,
+.side-resize--active {
+  background: var(--selected);
+}
+
+/* ------------------------------------------------------------- task table */
+
+.task-list-head,
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.task-list-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel-raised);
+  border-bottom: 1px solid var(--grid);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  color: var(--text-faint);
+}
+
 .task-list {
   display: grid;
   gap: 1px;
+  align-content: start;
   margin: 0;
-  padding: 0;
+  padding: 0 4px 4px;
   list-style: none;
+  overflow-y: auto;
 }
 
 .task-row {
-  display: grid;
-  grid-template-columns: 30px minmax(70px, 1fr) 70px 54px 90px 60px;
-  gap: 8px;
-  align-items: center;
-  padding: 2px 4px;
+  padding: 0;
   font-size: 10px;
   color: var(--text-dim);
   background: var(--panel-sunken);
 }
 
-.task-priority {
+.task-row:hover {
+  background: var(--panel-raised);
+}
+
+.task-table {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.task-head-cell {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+.task-col {
+  /* Each column's width comes from the strip's custom property, so the header
+     and every row are sized from one source and cannot drift apart. */
+  flex: 0 0 auto;
+  width: var(--col-width, var(--col-priority, 40px));
+  min-width: 0;
+  padding: 2px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-col[data-col="priority"] { width: var(--col-priority); }
+.task-col[data-col="id"] { width: var(--col-id); }
+.task-col[data-col="needs"] { width: var(--col-needs); }
+.task-col[data-col="target"] { width: var(--col-target); }
+.task-col[data-col="owner"] { width: var(--col-owner); }
+.task-col[data-col="status"] { width: var(--col-status); }
+.task-col[data-col="eta"] { width: var(--col-eta); }
+
+.task-col--id {
+  color: var(--text);
   font-weight: bold;
 }
 
-.task-name {
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
+.task-col--needs {
+  color: var(--resource);
 }
 
-.task-owner {
+.task-col--owner {
   color: var(--info);
 }
 
-.task-duration {
+.task-col[data-col="eta"] {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.task-list-head .task-col {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+/* ------------------------------------------------------------- work kind */
+
+.work-kind {
+  display: grid;
+  grid-template-columns: 70px auto;
+  grid-template-areas:
+    "label value"
+    "label detail";
+  gap: 1px 8px;
+  padding: 6px 8px;
+  background: var(--panel-sunken);
+  border-left: 2px solid var(--grid-major);
+}
+
+.work-kind-label {
+  grid-area: label;
+  align-self: center;
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  color: var(--text-faint);
+}
+
+.work-kind-value {
+  grid-area: value;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+}
+
+.work-kind-detail {
+  grid-area: detail;
+  font-size: 9px;
+  line-height: 1.45;
+  color: var(--text-dim);
 }
 
 /* ---------------------------------------------------------------- scenario */
