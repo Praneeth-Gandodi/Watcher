@@ -316,6 +316,23 @@ class RobotState:
 
 
 @dataclass(frozen=True, slots=True)
+class YieldContext:
+    """Why a robot is currently yielding, and to whom.
+
+    The runtime already decides right-of-way; this records the reason alongside
+    the decision so a consumer can explain it without re-deriving anything. It
+    is cleared as soon as the release time passes.
+    """
+
+    robot_id: str
+    yields_to_robot_id: str
+    conflict_id: str
+    started_at_s: float
+    release_at_s: float
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class SafetyStep:
     """One conflict found and the resolution chosen for it."""
 
@@ -565,6 +582,7 @@ class SimulationRuntime:
         self._conflicts: dict[str, Conflict] = {}
         self._battery_notified: dict[str, str] = {}
         self._reported_deadlocks: set[str] = set()
+        self._yield_context: dict[str, YieldContext] = {}
         self._open_conflict_by_pair: dict[tuple[str, str], str] = {}
         self._allocation_latencies_ms: list[float] = []
         self._task_reassignments = 0
@@ -618,6 +636,12 @@ class SimulationRuntime:
     @property
     def tick_rate_hz(self) -> float:
         return self._tick_rate_hz
+
+    @property
+    def communication_timeout_s(self) -> float:
+        """Seconds of missed contact before a link is treated as lost."""
+
+        return self._communication_timeout_s
 
     @property
     def tick_dt_s(self) -> float:
@@ -1334,6 +1358,9 @@ class SimulationRuntime:
             if step.resolution is None or step.resolution.yield_robot is None:
                 continue
             action = self.build_yield_recovery(step.conflict, step.resolution, at_s)
+            self._record_yield_context(
+                step.conflict, step.resolution, action, at_s
+            )
             events.extend(
                 self._emit(
                     RecoveryStartedPayload(action=action),
@@ -1343,6 +1370,55 @@ class SimulationRuntime:
             )
             self._resolve_conflict(record)
         return tuple(events)
+
+    def _record_yield_context(
+        self,
+        conflict: FleetConflict,
+        resolution,
+        action: RecoveryAction,
+        observed_at_s: float,
+    ) -> None:
+        """Remember why a robot is yielding, and until when."""
+
+        robot_id = resolution.yield_robot
+        if robot_id is None:
+            return
+        others = [
+            other for other in conflict.involved_robot_ids if other != robot_id
+        ]
+        state = self._require_state(robot_id)
+        self._yield_context[robot_id] = YieldContext(
+            robot_id=robot_id,
+            yields_to_robot_id=others[0] if others else "",
+            conflict_id=action.action_id,
+            started_at_s=observed_at_s,
+            release_at_s=(
+                state.resume_after_s
+                if state.resume_after_s is not None
+                else observed_at_s
+            ),
+            reason=resolution.reason[:500],
+        )
+
+    def yield_context(self) -> dict[str, YieldContext]:
+        """Return the current yield reasons, dropping expired holds.
+
+        A hold is only interesting until the robot is released again, so an
+        expired entry is removed instead of being reported as a stale reason.
+        """
+
+        now_s = self._clock.now_s
+        expired = [
+            robot_id
+            for robot_id, context in self._yield_context.items()
+            if context.release_at_s <= now_s
+        ]
+        for robot_id in expired:
+            del self._yield_context[robot_id]
+        return {
+            robot_id: self._yield_context[robot_id]
+            for robot_id in sorted(self._yield_context)
+        }
 
     def apply_yield(self, resolution: YieldResolution, observed_at_s: float) -> None:
         """Commit a fleet-validated delay trajectory to a yielding robot."""
@@ -1727,6 +1803,7 @@ class SimulationRuntime:
         self._open_conflict_by_pair.clear()
         self._battery_notified.clear()
         self._reported_deadlocks.clear()
+        self._yield_context.clear()
         self._allocation_latencies_ms.clear()
         self._task_reassignments = 0
         self._detected_deadlocks = 0

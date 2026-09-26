@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.app.composition import FleetCoordinator, get_coordinator
 from backend.contracts.commands import (
@@ -35,6 +35,14 @@ from backend.contracts.models import (
     Task,
     WorldState,
 )
+from backend.simulation.scenarios import scenario_specs
+from backend.simulation.telemetry import build_fleet_telemetry
+
+#: Grid presets the scenario editor offers.
+GRID_PRESETS: tuple[tuple[int, int], ...] = ((20, 15), (30, 20), (40, 25), (50, 30))
+
+#: Fleet presets for the scale test.
+FLEET_PRESETS: tuple[int, ...] = (10, 25, 50, 100, 250, 500)
 
 router = APIRouter(tags=["system"])
 
@@ -119,6 +127,108 @@ class SimulationSpeedRequest(BaseModel):
     multiplier: float
 
 
+class RobotTelemetryResponse(BaseModel):
+    """Live per-robot state for rendering and the inspector.
+
+    Every field is derived from backend state. ``width_cells``/``height_cells``/
+    ``speed_mps`` come straight from ``RobotProfile``, which is the single
+    source of truth for robot geometry, so the rendered footprint always matches
+    the footprint the collision engine uses.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    robot_id: str
+    width_cells: int
+    height_cells: int
+    speed_mps: float
+    battery_percent: float
+    battery_percent_per_cell: float
+    cell_x: int
+    cell_y: int
+    position_x: float
+    position_y: float
+    status: str
+    communication_state: str
+    action: str
+    action_reason: str
+    workload: int
+    capabilities: tuple[str, ...]
+    failure_code: str | None
+    task_id: str | None
+    route_id: str | None
+    route_status: str | None
+    destination_x: int | None
+    destination_y: int | None
+    progress: float
+    cells_travelled: int
+    remaining_cells: int
+    remaining_time_s: float
+    conflict_with: tuple[str, ...]
+    conflict_detected_at_s: float | None
+    waiting_for_robot_id: str | None
+    waiting_since_s: float | None
+    #: Remaining timed placements as ``[x_m, y_m, t_s]``, capped server side.
+    trail: tuple[tuple[float, float, float], ...]
+
+
+class TelemetryResponse(BaseModel):
+    """Fleet telemetry plus per-robot detail."""
+
+    model_config = ConfigDict(extra="forbid")
+    simulation_time_s: float
+    scenario: str
+    counts_by_action: dict[str, int]
+    battery_buckets: dict[str, int]
+    open_conflict_pairs: tuple[tuple[str, ...], ...]
+    deadlocked_robot_ids: tuple[str, ...]
+    controller_available: bool
+    revision: int
+    last_event_sequence: int
+    robots: tuple[RobotTelemetryResponse, ...]
+
+
+class ScenarioInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    layout: str
+    description: str
+    columns: int
+    rows: int
+    robot_count: int
+    task_count: int
+
+
+class ScenarioListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scenarios: tuple[ScenarioInfo, ...]
+    grid_presets: tuple[tuple[int, int], ...]
+    fleet_presets: tuple[int, ...]
+    active: str
+
+
+class ScenarioRequest(BaseModel):
+    """Load a preset, optionally resized for a scale test."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    robot_count: int | None = Field(default=None, ge=1, le=1000)
+    columns: int | None = Field(default=None, ge=6, le=200)
+    rows: int | None = Field(default=None, ge=6, le=200)
+    seed: int | None = Field(default=None, ge=0)
+    run_initial_tasks: bool = True
+
+
+class ScenarioLoadedResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scenario: str
+    robots: int
+    tasks: tuple[str, ...]
+    columns: int
+    rows: int
+    last_event_sequence: int
+    simulation_time_s: float
+
+
 Coordinator = Annotated[FleetCoordinator, Depends(get_coordinator)]
 
 
@@ -155,7 +265,6 @@ async def get_metrics(coordinator: Coordinator) -> SystemMetrics:
 
 @router.get("/robots", response_model=list[Robot])
 async def get_robots(coordinator: Coordinator) -> list[Robot]:
-    """Return every robot in canonical ``robot_id`` order."""
 
     return list(coordinator.runtime.robots())
 
@@ -392,5 +501,148 @@ def _command_id():
     from uuid import uuid4
 
     return uuid4()
+
+
+# ----------------------------------------------------------------------
+# Simulation read models for the dashboard
+# ----------------------------------------------------------------------
+
+
+@router.get("/telemetry", response_model=TelemetryResponse)
+async def get_telemetry(coordinator: Coordinator) -> TelemetryResponse:
+    """Return live per-robot state and fleet aggregates.
+
+    This is the endpoint that carries ``RobotProfile`` data. ``/snapshot`` keeps
+    the canonical contract shapes untouched, so the geometry the renderer uses
+    comes from the same registry the planner and collision engine read, rather
+    than from anything the client remembers.
+    """
+
+    telemetry = build_fleet_telemetry(coordinator.runtime)
+    return TelemetryResponse(
+        simulation_time_s=telemetry.simulation_time_s,
+        scenario=coordinator.scenario_name or "default",
+        counts_by_action=dict(telemetry.counts_by_action),
+        battery_buckets=dict(telemetry.battery_buckets),
+        open_conflict_pairs=telemetry.open_conflict_pairs,
+        deadlocked_robot_ids=telemetry.deadlocked_robot_ids,
+        controller_available=telemetry.controller_available,
+        revision=telemetry.revision,
+        last_event_sequence=telemetry.last_event_sequence,
+        robots=tuple(
+            RobotTelemetryResponse(
+                robot_id=robot.robot_id,
+                width_cells=robot.width_cells,
+                height_cells=robot.height_cells,
+                speed_mps=robot.speed_mps,
+                battery_percent=robot.battery_percent,
+                battery_percent_per_cell=robot.battery_percent_per_cell,
+                cell_x=robot.cell_x,
+                cell_y=robot.cell_y,
+                position_x=robot.position_x,
+                position_y=robot.position_y,
+                status=robot.status,
+                communication_state=robot.communication_state,
+                action=robot.action,
+                action_reason=robot.action_reason,
+                workload=robot.workload,
+                capabilities=robot.capabilities,
+                failure_code=robot.failure_code,
+                task_id=robot.task_id,
+                route_id=robot.route_id,
+                route_status=robot.route_status,
+                destination_x=robot.destination_x,
+                destination_y=robot.destination_y,
+                progress=robot.progress,
+                cells_travelled=robot.cells_travelled,
+                remaining_cells=robot.remaining_cells,
+                remaining_time_s=robot.remaining_time_s,
+                conflict_with=robot.conflict_with,
+                conflict_detected_at_s=robot.conflict_detected_at_s,
+                waiting_for_robot_id=robot.waiting_for_robot_id,
+                waiting_since_s=robot.waiting_since_s,
+                trail=robot.trail,
+            )
+            for robot in telemetry.robots
+        ),
+    )
+
+
+@router.post("/simulation/dispatch", response_model=CommandResponse)
+async def post_dispatch(coordinator: Coordinator) -> CommandResponse:
+    """Negotiate and assign every task that is still waiting for an owner.
+
+    A scenario registers its tasks up front, so this is what starts the rounds.
+    It is the same negotiation and allocation path a single task takes.
+    """
+
+    events = coordinator.dispatch_pending_tasks()
+    snapshot = coordinator.snapshot()
+    return CommandResponse(
+        accepted=True,
+        command_type="DISPATCH",
+        produced_event_types=tuple(event.event_type.value for event in events),
+        last_event_sequence=snapshot.last_event_sequence,
+        revision=snapshot.revision,
+        simulation_time_s=snapshot.simulation_time_s,
+    )
+
+
+@router.get("/scenarios", response_model=ScenarioListResponse)
+async def get_scenarios(coordinator: Coordinator) -> ScenarioListResponse:
+    """List the scenario presets and the grid/fleet size presets."""
+
+    return ScenarioListResponse(
+        scenarios=tuple(
+            ScenarioInfo(
+                name=spec.name,
+                layout=spec.layout,
+                description=spec.description,
+                columns=spec.columns,
+                rows=spec.rows,
+                robot_count=spec.robot_count,
+                task_count=spec.task_count,
+            )
+            for spec in scenario_specs()
+        ),
+        grid_presets=GRID_PRESETS,
+        fleet_presets=FLEET_PRESETS,
+        active=coordinator.scenario_name or "default",
+    )
+
+
+@router.post("/simulation/scenario", response_model=ScenarioLoadedResponse)
+async def post_scenario(
+    coordinator: Coordinator,
+    request: ScenarioRequest,
+) -> ScenarioLoadedResponse:
+    """Load a named preset, optionally resized for a scale test.
+
+    Rebuilds the simulation from scratch, which is what makes a preset
+    reproducible. The dashboard's event cursor is reset with the old stream, so
+    the client must resynchronise from sequence 0 after this call.
+    """
+
+    try:
+        coordinator.load_scenario(
+            request.name,
+            robot_count=request.robot_count,
+            columns=request.columns,
+            rows=request.rows,
+            seed=request.seed,
+            run_initial_tasks=request.run_initial_tasks,
+        )
+    except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    snapshot = coordinator.snapshot()
+    return ScenarioLoadedResponse(
+        scenario=request.name,
+        robots=len(snapshot.robots),
+        tasks=tuple(task.task_id for task in snapshot.tasks),
+        columns=snapshot.world.columns,
+        rows=snapshot.world.rows,
+        last_event_sequence=snapshot.last_event_sequence,
+        simulation_time_s=snapshot.simulation_time_s,
+    )
 
 

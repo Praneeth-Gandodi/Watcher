@@ -71,6 +71,7 @@ from backend.negotiation.events import DecisionEventContext
 from backend.negotiation.reassignment import ReassignmentService
 from backend.safety.battery import BatteryPolicy
 from backend.simulation.runtime import InMemoryEventStream, SimulationRuntime
+from backend.simulation.scenarios import build_scenario_fleet, spec_for as scenario_spec
 from backend.simulation.world import FleetBlueprint, build_fleet
 
 __all__ = [
@@ -155,6 +156,58 @@ class FleetCoordinator:
         self._producer = producer
         self._handled_triggers: set[object] = set()
         self._correlation_counter = 0
+        self._scenario_name = ""
+
+    # ------------------------------------------------------------------
+    # Scenarios
+    # ------------------------------------------------------------------
+
+    @property
+    def scenario_name(self) -> str:
+        """Name of the loaded scenario, or an empty string for the default fleet."""
+
+        return self._scenario_name
+
+    def load_scenario(
+        self,
+        name: str,
+        *,
+        robot_count: int | None = None,
+        columns: int | None = None,
+        rows: int | None = None,
+        seed: int | None = None,
+        run_initial_tasks: bool = True,
+    ) -> tuple[Task, ...]:
+        """Rebuild the simulation from a named preset and return its tasks.
+
+        Loading replaces the runtime wholesale, which is what makes a preset
+        reproducible: the same preset with the same seed always produces the same
+        world, the same fleet, and the same tasks. The previous run's events are
+        discarded with the old stream, so the dashboard's cursor stays valid.
+        """
+
+        spec = scenario_spec(
+            name,
+            robot_count=robot_count,
+            columns=columns,
+            rows=rows,
+            seed=seed,
+        )
+        blueprint, tasks = build_scenario_fleet(spec)
+        self._runtime = SimulationRuntime(
+            blueprint,
+            battery_policy=self._runtime.battery_manager.policy,
+            communication_timeout_s=self._runtime.communication_timeout_s,
+            tick_rate_hz=self._runtime.tick_rate_hz,
+        )
+        self._scenario_name = spec.name
+        self.reset_counters()
+        if spec.speed_multiplier != 1.0:
+            self._runtime.clock.set_speed(spec.speed_multiplier)
+        if run_initial_tasks:
+            for task in tasks:
+                self._runtime.submit_task(task)
+        return tasks
 
     # ------------------------------------------------------------------
     # Accessors
@@ -245,6 +298,24 @@ class FleetCoordinator:
         """Run an Agent 1 negotiation for an already registered task."""
 
         return self._negotiate(task)
+
+    def dispatch_pending_tasks(self) -> tuple[EventEnvelope[EventPayload], ...]:
+        """Negotiate and assign every task that is still waiting for an owner.
+
+        Tasks are registered up front by a scenario, so something has to kick
+        the round off. Running them together is also how the demo gets the whole
+        fleet moving in one action, and it is the same code path a single task
+        takes, so nothing is special-cased for the UI.
+        """
+
+        produced: list[EventEnvelope[EventPayload]] = []
+        for task in self._runtime.tasks():
+            if task.status is not TaskStatus.PENDING:
+                continue
+            decision = self._negotiate(task)
+            produced.extend(decision.events)
+            produced.extend(self._absorb(decision.events))
+        return tuple(produced)
 
     # ------------------------------------------------------------------
     # Simulation driving
@@ -390,9 +461,17 @@ def build_coordinator(
 
 
 def build_demo_coordinator() -> FleetCoordinator:
-    """Build the coordinator used by the HTTP layer and the demo."""
+    """Build the coordinator used by the HTTP layer and the demo.
 
-    return build_coordinator(robot_count=5)
+    The demo starts on the default ``normal`` preset: 10 mixed-size robots with
+    four different speeds on the designed 40x25 warehouse, with its tasks
+    already registered. That means opening the dashboard shows a running fleet
+    immediately, rather than an empty world someone has to configure first.
+    """
+
+    coordinator = build_coordinator(robot_count=10)
+    coordinator.load_scenario("normal")
+    return coordinator
 
 
 _COORDINATOR: FleetCoordinator | None = None

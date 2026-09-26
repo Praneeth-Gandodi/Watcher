@@ -8,7 +8,7 @@ every value from a local ``random.Random`` instance.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import isqrt
 from random import Random
@@ -17,7 +17,6 @@ from backend.contracts.models import (
     CommunicationState,
     GridCell,
     GridCellType,
-    Position2D,
     Robot,
     RobotCapability,
     RobotStatus,
@@ -397,17 +396,3 @@ def profiles_from_mapping(
     """Return a registry built from a plain mapping."""
 
     return RobotProfileRegistry(mapping)
-
-
-def profiles_from_iterable(
-    profiles: Iterable[RobotProfile],
-) -> RobotProfileRegistry:
-    """Return a registry built from an iterable of profiles."""
-
-    return RobotProfileRegistry(profiles)
-
-
-def default_start_position() -> Position2D:
-    """Centre of the origin cell, used as a neutral fallback position."""
-
-    return Position2D(x=DEMO_CELL_SIZE_M / 2.0, y=DEMO_CELL_SIZE_M / 2.0)
