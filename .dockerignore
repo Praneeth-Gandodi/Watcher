@@ -1,0 +1,36 @@
+# Keep the build context small and the image free of local state.
+.git
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+frontend/node_modules
+frontend/dist
+frontend/coverage
+*.tsbuildinfo
+.vite
+
+.playwright-mcp
+runtime
+logs
+*.db
+*.sqlite3
+.env
+.env.*
+!.env.example
+.idea
+.vscode
+.DS_Store
+
+# Local working notes that are not part of the image.
+AGENTS.md
+agents/
+docs/PRESENTATION.md
