@@ -61,7 +61,7 @@ view over that stream.
               ┌─────────────┴───┐   ┌──────┴─────────────┐
               ▼                 ▼   ▼                    ▼
       negotiation            safety/              contracts/
-      (agent 1)        pathfinding, collision,   frozen models,
+      (bidding)        pathfinding, collision,   frozen models,
                         deadlock, battery,        events, commands
                         failure
 ```
@@ -75,8 +75,7 @@ the console reaches around it: the runtime converts its mutable internal state
 into contract models only when it builds a projection, and the console validates
 every payload it receives rather than casting it.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRACTS.md](CONTRACTS.md), and
-[dashboard/README.md](dashboard/README.md).
+See [ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRACTS.md](CONTRACTS.md).
 
 ## Running it
 
@@ -212,14 +211,14 @@ does not.
 
 ## Repository layout
 
-| Path | Owner | What lives there |
+| Path | Subsystem | What lives there |
 |---|---|---|
 | `backend/contracts/` | shared | Frozen models, events, commands. Authoritative. |
-| `backend/negotiation/` | agent 1 | Bid eligibility, scoring, auction, allocation. |
-| `backend/simulation/` | agent 2 | World generation, grid indexing, the runtime. |
-| `safety/` | agent 2 | Pathfinding, collision, deadlock, battery, failure. |
-| `backend/app/` | agent 2 | HTTP and WebSocket surface, service lifecycle. |
-| `dashboard/` | agent 3 | The operations console. |
+| `backend/negotiation/` | negotiation | Bid eligibility, scoring, auction, allocation. |
+| `backend/simulation/` | safety | World generation, grid indexing, the runtime. |
+| `safety/` | safety | Pathfinding, collision, deadlock, battery, failure. |
+| `backend/app/` | safety | HTTP and WebSocket surface, service lifecycle. |
+| `dashboard/` | console | The operations console. |
 | `tests/contract/` | shared | Contract compliance for every published surface. |
 | `tests/integration/` | shared | Scenarios A–H, run against the real runtime. |
 

@@ -33,7 +33,7 @@ A reviewer must inspect the complete diff and all changed files before merge. Au
 
 ## Ownership and contracts
 
-Read `AGENTS.md` and the assigned agent prompt. Do not edit another agent's implementation. Any change to `backend/contracts/**` or documented public API requires an integration PR with contract tests and documentation updates.
+Read `ARCHITECTURE.md` and `CONTRACTS.md` before changing anything. Any change to `backend/contracts/**` or a documented public API requires an integration PR with contract tests and documentation updates.
 
 ## Required checks
 

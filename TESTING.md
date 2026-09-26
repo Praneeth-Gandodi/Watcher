@@ -4,7 +4,7 @@
 
 1. **Unit tests** (`tests/unit`): bid scoring, eligibility, allocation, path calculation, collision/deadlock detection, battery thresholds, React rendering, and command validation.
 2. **Contract tests** (`tests/contract`): Robot, Task, Bid, route, snapshot, commands, event names, event payload fields, strict serialization, and health API.
-3. **Integration tests** (`tests/integration`): complete flows A–H documented in `tests/integration/README.md`.
+3. **Integration tests** (`tests/integration`): complete flows A-H, one module per scenario, each run against the real runtime with no mocks.
 
 ## Commands
 

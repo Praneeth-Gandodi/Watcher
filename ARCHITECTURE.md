@@ -18,14 +18,14 @@ Task command -> task broadcast -> candidate discovery -> robot bids
 
 | Subsystem | Owns | Does not own |
 |---|---|---|
-| Agent 1 | Eligibility, bidding, negotiation, allocation, reassignment, decision events | Planning, movement, collision, deadlock, UI |
-| Agent 2 | Backend 2D world/grid, robot movement, route planning, conflict/right-of-way, deadlock, battery, failure and communication recovery; publishes safety events | Negotiation internals, dashboard rendering |
-| Agent 3 | React dashboard, state/event visualization, metrics, commands, fault controls | Backend algorithms, fake domain state |
-| Agent 4 | README, architecture diagrams, demos, benchmarks, deployment and presentation | Core product algorithms |
+| Negotiation | Eligibility, bidding, negotiation, allocation, reassignment, decision events | Planning, movement, collision, deadlock, UI |
+| Safety | Backend 2D world/grid, robot movement, route planning, conflict/right-of-way, deadlock, battery, failure and communication recovery; publishes safety events | Negotiation internals, dashboard rendering |
+| Console | React dashboard, state/event visualization, metrics, commands, fault controls | Backend algorithms, fake domain state |
+| Docs and delivery | README, architecture diagrams, demos, benchmarks, deployment | Core product algorithms |
 
 ## Dependency rules
 
-`backend/contracts` depends on no owned subsystem. Agent 1 and Agent 2 depend on contracts, not on each other's internals. The protected simulation composition root wires protocols together. The dashboard consumes only the HTTP snapshot/command API and WebSocket event stream. No component reaches into another component's private state.
+`backend/contracts` depends on no owned subsystem. Negotiation and Safety depend on contracts, not on each other's internals. The protected simulation composition root wires protocols together. The dashboard consumes only the HTTP snapshot/command API and WebSocket event stream. No component reaches into another component's private state.
 
 ## Failure model
 

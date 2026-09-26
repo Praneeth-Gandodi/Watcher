@@ -39,3 +39,15 @@ logs/
 
 # Tooling scratch
 .playwright-mcp/
+shot-*.png
+snap*.md
+
+# Internal working notes, kept local and not published.
+# The root README.md stays tracked: it is the project front page and a build
+# input for both pyproject.toml and the Dockerfile.
+AGENTS.md
+agents/
+docs/PRESENTATION.md
+docs/ui-ux/
+**/README.md
+!/README.md

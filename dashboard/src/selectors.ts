@@ -440,7 +440,7 @@ export interface DeadlockCycle {
  * The snapshot has no deadlock collection, so this is derived conservatively
  * from the canonical events: a cycle stays live until a recovery, a reassignment
  * or a completion touches one of its robots or tasks. That limitation is real
- * and is recorded in `dashboard/README.md` rather than papered over.
+ * and is recorded in the root `README.md` rather than papered over.
  */
 export function activeDeadlocks(events: readonly DomainEvent[]): DeadlockCycle[] {
   const cycles = new Map<string, DeadlockCycle>();
