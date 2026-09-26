@@ -56,6 +56,35 @@ class ReassignmentService:
     def __init__(self, engine: DefaultNegotiationEngine | None = None) -> None:
         self._engine = engine or DefaultNegotiationEngine()
 
+    def publish_manual_handover(
+        self,
+        *,
+        task_id: str,
+        previous_robot_id: str,
+        new_robot_id: str,
+        reason: str,
+        observed_at_s: float,
+        event_context: DecisionEventContext,
+    ) -> EventEnvelope[object]:
+        """Publish the record of a task moving to an operator-chosen robot.
+
+        A manual assignment is still a coordination decision, so the canonical
+        event is built here, in the decision layer, rather than in the HTTP
+        adapter or the composition root. The Agent 2 runtime only moves robots
+        and resolves conflicts; it never decides who owns a task.
+        """
+
+        factory = DecisionEventFactory(event_context)
+        return factory.create(
+            TaskReassignedPayload(
+                task_id=task_id,
+                previous_robot_id=previous_robot_id,
+                new_robot_id=new_robot_id,
+                reason=reason,
+            ),
+            observed_at_s,
+        )
+
     async def reassign(
         self,
         *,

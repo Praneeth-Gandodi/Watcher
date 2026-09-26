@@ -375,14 +375,21 @@ class FleetCoordinator:
             self._runtime.release_task_from_robot(task_id, previous)
         events = list(self._runtime.assign_task(task_id, robot_id))
         if previous is not None and previous != robot_id:
-            self._runtime.publish_reassignment(
-                task_id,
-                previous,
-                robot_id,
+            # Reassignment is a coordination decision, so the canonical
+            # ``TASK_REASSIGNED`` event is built by the decision layer. Neither
+            # this composition root nor the Agent 2 runtime constructs payloads.
+            handover = self._reassignment.publish_manual_handover(
+                task_id=task_id,
+                previous_robot_id=previous,
+                new_robot_id=robot_id,
                 reason="operator assigned this task by hand",
-                at_s=self._runtime.now_s,
+                observed_at_s=self._runtime.now_s,
+                event_context=self._event_context(task_id),
             )
-            events.extend(self._absorb(tuple(events)))
+            # The handover is published into the stream by `_absorb`; it is also
+            # returned so the caller sees which events the command caused.
+            events.extend(self._absorb((handover,)))
+            events.append(handover)
         return tuple(events)
 
     # ------------------------------------------------------------------

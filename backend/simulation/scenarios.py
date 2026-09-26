@@ -556,7 +556,7 @@ _SCENARIOS: tuple[ScenarioSpec, ...] = (
     ScenarioSpec(
         name="deadlock",
         layout="deadlock",
-        description="One-cell ring corridor: robots can end up mutually waiting.",
+        description="Cross-aisle pinched to one cell: robots deadlock head-on, then one backs off.",
         task_count=6,
     ),
     ScenarioSpec(

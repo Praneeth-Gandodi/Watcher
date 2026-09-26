@@ -382,8 +382,8 @@ def test_a_crossing_pair_is_detected_and_resolved_by_a_timing_delay() -> None:
     assert find_earliest_conflict(runtime.active_trajectories()) is None
 
 
-def test_a_parked_robot_makes_a_conflict_permanent_and_blocks() -> None:
-    """A finished robot holding a cell another must cross is unresolvable."""
+def test_a_parked_robot_does_not_keep_a_conflict_open_forever() -> None:
+    """A finished robot holding a cell is reported, then the conflict closes."""
 
     runtime = crossing_runtime()
     runtime.submit_task(task("task-001", (8, 2), priority=4))
@@ -404,7 +404,6 @@ def test_a_parked_robot_makes_a_conflict_permanent_and_blocks() -> None:
         if item.event_type is EventType.RECOVERY_STARTED
         and "delays departure" in item.payload.action.reason
     ]
-    assert fleets_conflict_free(runtime) is False
     conflict = next(
         item
         for item in runtime.event_stream.subscribe(0)
@@ -412,13 +411,13 @@ def test_a_parked_robot_makes_a_conflict_permanent_and_blocks() -> None:
     )
     assert conflict.payload.conflict.position.x == 2.5
     assert conflict.payload.conflict.status.value == "open"
-    blocked = {
-        state.robot_id
-        for state in runtime.robot_states()
-        if state.robot.status is RobotStatus.BLOCKED
-    }
-    assert blocked == {"robot-001", "robot-002"}
-    assert runtime.snapshot().metrics.open_conflicts == 1
+    # A robot aimed at an occupied cell is never allowed to sit on top of it.
+    assert fleets_conflict_free(runtime) is True
+
+    # And the conflict does not stay open once nothing can move any further.
+    runtime.run_ticks(200)
+    assert runtime.snapshot().metrics.open_conflicts == 0
+    assert fleets_conflict_free(runtime) is True
 
 
 def test_safety_is_event_driven_and_not_re_evaluated_every_second() -> None:
@@ -435,8 +434,8 @@ def test_safety_is_event_driven_and_not_re_evaluated_every_second() -> None:
     assert runtime.revision >= 1
 
 
-def test_a_head_on_pair_is_reported_as_unresolved_and_blocks() -> None:
-    """A timing delay cannot fix two robots walking into each other."""
+def test_a_head_on_pair_is_detected_and_then_resolved_by_a_retreat() -> None:
+    """Two robots walking into each other block, then one backs off."""
 
     blueprint = make_blueprint(
         obstacles=(),
@@ -455,15 +454,15 @@ def test_a_head_on_pair_is_reported_as_unresolved_and_blocks() -> None:
     assert len(
         [item for item in events if item.event_type is EventType.CONFLICT_DETECTED]
     ) == 1
-    assert fleets_conflict_free(runtime) is False
     blocked = {
         state.robot_id
         for state in runtime.robot_states()
         if state.robot.status is RobotStatus.BLOCKED
     }
-    assert blocked == {"robot-001", "robot-002"}
-    # The conflict stays honestly open: the MVP cannot resolve a head-on.
-    assert runtime.snapshot().metrics.open_conflicts == 1
+    # At least one machine is held: neither drives through the other, and the
+    # recovery may already have begun pulling one of them aside.
+    assert blocked
+    assert blocked <= {"robot-001", "robot-002"}
 
     # A head-on is also cyclic waiting, so a deadlock is detected and reported.
     deadlocks = [
@@ -486,6 +485,12 @@ def test_a_head_on_pair_is_reported_as_unresolved_and_blocks() -> None:
         for item in later
         if item.event_type is EventType.DEADLOCK_DETECTED
     ]
+
+    # The recovery is applied, not just announced: one robot is given a real
+    # route out of the way, so the cycle clears and the conflict closes.
+    runtime.run_ticks(60)
+    assert runtime.snapshot().metrics.open_conflicts == 0
+    assert fleets_conflict_free(runtime) is True
 
 
 def test_the_safety_engine_protocol_is_available() -> None:

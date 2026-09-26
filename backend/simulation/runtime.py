@@ -816,6 +816,36 @@ class SimulationRuntime:
         )
         return created + self._commit(self._clock.now_s)
 
+    def set_battery_percent(
+        self, robot_id: str, percent: float, at_s: float | None = None
+    ) -> None:
+        """Set a robot's charge directly, as if it had drained on the way.
+
+        This is a fault-injection surface for the console, in the same family as
+        the failure and communication-loss injections. It does not publish
+        ``BATTERY_LOW`` itself: the next movement tick observes the new level and
+        the normal threshold crossing emits the event, so the coordinator's
+        existing battery trigger fires exactly as it would in a real drain.
+        """
+
+        if not isfinite(percent) or percent < 0 or percent > 100:
+            raise ValueError("percent must be a finite number between 0 and 100")
+        state = self._require_state(robot_id)
+        when = self._clock.now_s if at_s is None else at_s
+        self._robots[robot_id] = replace(
+            state,
+            robot=state.robot.model_copy(
+                update={
+                    "battery_percent": percent,
+                    "last_updated_at_s": when,
+                }
+            ),
+        )
+        # A fresh observation is due, so the crossing is not suppressed as a
+        # repeat of one already reported.
+        self._battery_notified.pop(robot_id, None)
+        self._mark_safety_dirty()
+
     def require_task(self, task_id: str) -> Task:
         """Return a registered task, or raise ``KeyError``."""
 
@@ -851,29 +881,6 @@ class SimulationRuntime:
             resume_after_s=None,
         )
         self._mark_safety_dirty()
-
-    def publish_reassignment(
-        self,
-        task_id: str,
-        previous_robot_id: str,
-        new_robot_id: str,
-        *,
-        reason: str,
-        at_s: float | None = None,
-    ) -> EventEnvelope[TaskReassignedPayload]:
-        """Publish the canonical record of a task changing hands."""
-
-        when = self._clock.now_s if at_s is None else at_s
-        return self._emit(
-            TaskReassignedPayload(
-                task_id=task_id,
-                previous_robot_id=previous_robot_id,
-                new_robot_id=new_robot_id,
-                reason=reason,
-            ),
-            when,
-            correlation_id=task_id,
-        )
 
     def release_open_assignments(self) -> tuple[EventEnvelope[EventPayload], ...]:
         """Return every unfinished task to ``pending`` and clear its route.
@@ -935,6 +942,8 @@ class SimulationRuntime:
         self,
         task_id: str,
         robot_id: str,
+        *,
+        commit: bool = True,
     ) -> tuple[EventEnvelope[EventPayload], ...]:
         """Bind a task to a robot and plan its route.
 
@@ -942,6 +951,11 @@ class SimulationRuntime:
         ``ROUTE_REPLANNED`` when the pair already had a route). If no route
         exists the plan is published as ``INVALID`` and the task is reported as
         blocked instead of silently stalling.
+
+        ``commit=False`` binds and plans without running a tick. A caller that is
+        already inside a commit -- finishing a retreat, for instance -- uses it
+        so movement for that tick is not evaluated twice against a half-updated
+        fleet.
         """
 
         task = self._tasks.get(task_id)
@@ -1013,6 +1027,8 @@ class SimulationRuntime:
             self._tasks[task_id] = evolve_task(
                 self._tasks[task_id], status=TaskStatus.BLOCKED
             )
+            if not commit:
+                return requested
             return requested + self._commit(self._clock.now_s)
 
         if previous_route is None:
@@ -1116,6 +1132,8 @@ class SimulationRuntime:
         events: list[EventEnvelope[EventPayload]] = []
         events.extend(self._move_robots(observed_at_s))
         events.extend(self._update_battery(observed_at_s))
+        events.extend(self._finish_retreats(observed_at_s))
+        self._close_finished_conflicts()
         if self._safety_dirty:
             events.extend(self.evaluate_safety(observed_at_s))
             events.extend(self._check_deadlock(observed_at_s))
@@ -1839,64 +1857,107 @@ class SimulationRuntime:
                 blocked_task_ids=self._task_ids_for(cycle.robot_ids),
                 detected_at_s=observed_at_s,
             )
-            if report.deadlock_id in self._reported_deadlocks:
-                continue
-            self._reported_deadlocks.add(report.deadlock_id)
-            self._detected_deadlocks += 1
+            already_reported = report.deadlock_id in self._reported_deadlocks
+            if not already_reported:
+                self._reported_deadlocks.add(report.deadlock_id)
+                self._detected_deadlocks += 1
+                events.extend(
+                    self._emit(
+                        DeadlockDetectedPayload(report=report),
+                        observed_at_s,
+                        correlation_id=report.deadlock_id,
+                    )
+                )
             recovery = recover_deadlock(wait_graph, self.priorities())
-            events.extend(
-                self._emit(
-                    DeadlockDetectedPayload(report=report),
-                    observed_at_s,
-                    correlation_id=report.deadlock_id,
-                )
-            )
             if not recovery.recovered or recovery.robot_id is None:
-                continue
-            events.extend(
-                self._emit(
-                    RecoveryStartedPayload(
-                        action=build_recovery_action(
-                            action_id=_derived_id(
-                                "recovery", "deadlock", recovery.robot_id
-                            ),
-                            action_type=RecoveryActionType.YIELD,
-                            target_robot_ids=(recovery.robot_id,),
-                            affected_task_ids=report.blocked_task_ids,
-                            reason=recovery.reason[:500],
-                            started_at_s=observed_at_s,
-                        )
-                    ),
-                    observed_at_s,
-                    correlation_id=report.deadlock_id,
+                # Nothing to try. Retrying every pass would spin, so a cycle
+                # with no usable victim is left for a later pass to reconsider.
+                if already_reported:
+                    continue
+                events.extend(
+                    self._emit(
+                        DeadlockDetectedPayload(report=report),
+                        observed_at_s,
+                        correlation_id=report.deadlock_id,
+                    )
                 )
-            )
+                continue
+            if not already_reported:
+                events.extend(
+                    self._emit(
+                        RecoveryStartedPayload(
+                            action=build_recovery_action(
+                                action_id=_derived_id(
+                                    "recovery", "deadlock", recovery.robot_id
+                                ),
+                                action_type=RecoveryActionType.YIELD,
+                                target_robot_ids=(recovery.robot_id,),
+                                affected_task_ids=report.blocked_task_ids,
+                                reason=recovery.reason[:500],
+                                started_at_s=observed_at_s,
+                            )
+                        ),
+                        observed_at_s,
+                        correlation_id=report.deadlock_id,
+                    )
+                )
             # Apply the recovery. Publishing the action on its own left the
             # cycle in place forever: the victim kept waiting and the conflict
             # stayed open, so a detected deadlock never actually cleared.
             # The canonical `RECOVERY_STARTED` event above is the report; the
             # state change below is the fix, which needs no new event type.
+            #
+            # This runs again for a cycle that was already reported, because the
+            # first attempt can fail -- a retreat route that the planner rejects,
+            # for instance. Without the retry the fleet reported a resolved
+            # deadlock while the robots stayed exactly where they were.
             self._apply_deadlock_recovery(recovery.robot_id, observed_at_s)
         return events
 
-    def _apply_deadlock_recovery(self, robot_id: str, observed_at_s: float) -> None:
-        """Release the chosen robot and close the conflicts that held it.
+    def _close_finished_conflicts(self) -> None:
+        """Resolve conflicts whose robots have nothing left to do.
 
-        The chosen robot stops waiting: its hold is ended, so its remaining route
-        is re-timed from the cell it stood on, and every open conflict it was
-        part of is resolved. The other robots in the cycle are therefore freed to
-        move again, which is what breaks the cycle rather than only describing
-        it.
+        A robot that has finished its route and holds no task is parked. A
+        conflict that still names it can never be resolved by movement, so
+        leaving it open would keep counting towards ``open_conflicts`` and keep
+        a finished run looking deadlocked.
         """
 
-        self._release_hold(robot_id, observed_at_s)
+        for conflict in list(self._conflicts.values()):
+            if conflict.status is not ResolutionStatus.OPEN:
+                continue
+            involved = [
+                self._robots[robot_id] for robot_id in conflict.robot_ids if robot_id in self._robots
+            ]
+            if not involved or len(involved) != len(conflict.robot_ids):
+                continue
+            # A conflict is unresolvable by movement once none of the robots in
+            # it can still move: they have either finished their route or have
+            # nothing left to drive. Leaving it open would keep a finished run
+            # looking deadlocked forever.
+            if any(not state.is_parked and state.trajectory for state in involved):
+                continue
+            self._resolve_conflict(conflict)
+
+    def _apply_deadlock_recovery(self, robot_id: str, observed_at_s: float) -> None:
+        """Break the cycle by backing one robot out of the way.
+
+        Releasing the chosen robot is not enough on its own. In a one-cell
+        passage the released robot is still standing in the only cell both
+        robots want, so the next safety pass finds the same conflict and the
+        cycle never clears. The chosen robot is therefore given a real retreat
+        route to the nearest place wide enough for two robots to pass, and its
+        own task route is replanned once it is there. The other robots in the
+        cycle are released immediately, because the space they were waiting for
+        is about to be free.
+        """
+
+        self._retreat_robot(robot_id, observed_at_s)
         for conflict in list(self._conflicts.values()):
             if conflict.status is not ResolutionStatus.OPEN:
                 continue
             if robot_id in conflict.robot_ids:
                 self._resolve_conflict(conflict)
-        # Every other robot in the cycle is now free of any open conflict, so it
-        # is released too rather than left waiting on a conflict that is closed.
         for other_id, state in list(self._robots.items()):
             if other_id == robot_id or state.blocked_since_s is None:
                 continue
@@ -1909,6 +1970,121 @@ class SimulationRuntime:
             if not still_conflicted:
                 self._release_hold(other_id, observed_at_s)
         self._mark_safety_dirty()
+
+    def _retreat_robot(self, robot_id: str, observed_at_s: float) -> None:
+        """Plan and commit a real move-aside for a robot that is in the way."""
+
+        state = self._require_state(robot_id)
+        if state.retreating_since_s is not None:
+            return
+        # Several places are tried, not just the closest one: the nearest cell
+        # with room to pass is often unreachable because something else is
+        # standing there, and accepting the first plan failure left the robot
+        # stuck with the deadlock reported as resolved.
+        for spot in self._passing_places(state):
+            route = self._planner.plan_sync(
+                robot_id,
+                state.task_id or f"retreat-{robot_id}",
+                self._grid.position_for_cell(state.current_cell),
+                self._grid.position_for_cell(spot),
+                self._world,
+                observed_at_s,
+            )
+            if route.status is RouteStatus.INVALID:
+                continue
+            trajectory = self._trajectory_for(state, route)
+            if not trajectory:
+                continue
+            self._robots[robot_id] = replace(
+                state,
+                route=route,
+                trajectory=trajectory,
+                task_id=state.task_id,
+                blocked_since_s=None,
+                resume_after_s=None,
+                retreating_since_s=observed_at_s,
+                robot=evolve_robot(
+                    state.robot,
+                    status=RobotStatus.ACTIVE,
+                    last_updated_at_s=observed_at_s,
+                ),
+            )
+            return
+        # Nowhere to go: keep the existing hold rather than inventing a route
+        # the planner cannot produce. The next safety pass will try again.
+        self._release_hold(robot_id, observed_at_s)
+
+    def _passing_places(self, state: RobotState) -> tuple[Cell, ...]:
+        """Free cells near the robot that two robots can share, nearest first."""
+
+        width = state.profile.width_cells
+        height = state.profile.height_cells
+        origin = state.current_cell
+        occupied = {
+            other.current_cell for other in self._robots.values() if other.robot_id != state.robot_id
+        }
+        found: list[Cell] = []
+        for radius in range(1, 14):
+            for x in range(
+                max(0, origin[0] - radius), min(self._world.columns, origin[0] + radius + 1)
+            ):
+                for y in range(
+                    max(0, origin[1] - radius), min(self._world.rows, origin[1] + radius + 1)
+                ):
+                    if max(abs(x - origin[0]), abs(y - origin[1])) != radius:
+                        continue
+                    if (x, y) in occupied:
+                        continue
+                    if not self._grid.footprint_is_free((x, y), width, height):
+                        continue
+                    if not self._has_passing_room((x, y), width, height):
+                        continue
+                    found.append((x, y))
+            if len(found) >= 4:
+                break
+        return tuple(found)
+
+    def _has_passing_room(self, cell: Cell, width: int, height: int) -> bool:
+        """Whether any orthogonal neighbour is free for this robot's footprint."""
+
+        x, y = cell
+        for offset_x, offset_y in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            neighbour = (x + offset_x, y + offset_y)
+            if not (
+                0 <= neighbour[0] < self._world.columns
+                and 0 <= neighbour[1] < self._world.rows
+            ):
+                continue
+            if self._grid.footprint_is_free(neighbour, width, height):
+                return True
+        return False
+
+    def _finish_retreats(self, observed_at_s: float) -> list[EventEnvelope[EventPayload]]:
+        """Hand a robot that has backed off its own task route again."""
+
+        events: list[EventEnvelope[EventPayload]] = []
+        for robot_id, state in list(self._robots.items()):
+            if state.retreating_since_s is None:
+                continue
+            if not state.trajectory:
+                continue
+            last = state.trajectory[-1]
+            # Only resume once the robot has actually arrived. Clearing the
+            # retreat on elapsed time alone rebound the task while the machine
+            # was still standing in the passage, which put it straight back into
+            # the same standoff.
+            if observed_at_s < last.timestamp_s or state.current_cell != last.cell:
+                continue
+            task = self._tasks.get(state.task_id) if state.task_id else None
+            cleared = replace(state, retreating_since_s=None, route=None, trajectory=())
+            self._robots[robot_id] = cleared
+            if task is None:
+                continue
+            # The robot is out of the way, so its task route is planned again
+            # from where it now stands. ``commit=False`` because this already
+            # runs inside a commit.
+            events.extend(self.assign_task(task.task_id, robot_id, commit=False))
+        return events
 
     # ------------------------------------------------------------------
     # Metrics and projection

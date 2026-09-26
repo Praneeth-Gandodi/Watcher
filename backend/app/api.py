@@ -117,6 +117,14 @@ class RestoreRobotRequest(BaseModel):
     robot_id: str
 
 
+class BatteryDrainRequest(BaseModel):
+    """Drain a robot's charge while it is working, as if it aged on the way."""
+
+    model_config = ConfigDict(extra="forbid")
+    robot_id: str
+    percent: float = Field(default=8.0, ge=0, le=100)
+
+
 class ResetSimulationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     seed: int = 2026
@@ -408,6 +416,38 @@ async def post_restore(
         robot_id=request.robot_id,
     )
     return _apply(coordinator, command)
+
+
+@router.post("/faults/battery-drain", response_model=CommandResponse, status_code=201)
+async def post_battery_drain(
+    coordinator: Coordinator,
+    request: BatteryDrainRequest,
+) -> CommandResponse:
+    """Drop a working robot's charge below the low threshold.
+
+    The runtime does not announce the drop: the next movement tick observes the
+    new level and the ordinary threshold crossing publishes ``BATTERY_LOW``, which
+    is the same trigger the coordinator already handles. A robot that was
+    carrying a task therefore has that task migrated to another unit, which is
+    what the battery template demonstrates.
+    """
+
+    try:
+        coordinator.runtime.set_battery_percent(request.robot_id, request.percent)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    events = coordinator.advance(1)
+    snapshot = coordinator.snapshot()
+    return CommandResponse(
+        accepted=True,
+        command_type="BATTERY_DRAIN",
+        produced_event_types=tuple(event.event_type.value for event in events),
+        last_event_sequence=snapshot.last_event_sequence,
+        revision=snapshot.revision,
+        simulation_time_s=snapshot.simulation_time_s,
+    )
 
 
 @router.post("/simulation/reset", response_model=CommandResponse)

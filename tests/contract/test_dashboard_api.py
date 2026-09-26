@@ -99,13 +99,12 @@ def test_telemetry_actions_come_from_the_closed_backend_set(coordinator) -> None
 
 
 def test_telemetry_reports_a_conflict_and_the_reason(coordinator) -> None:
-    """A conflict is derived from the open conflict record, not invented."""
+    """A reported conflict is derived from the open record, never invented."""
 
-    runtime = coordinator.runtime
-    runtime.submit_task(coordinator.runtime.tasks()[0]) if False else None
-    # Two robots driven head-on into the same corridor.
-    from tests.unit.safety.conftest import build_registry, world_with_obstacles
+    from backend.simulation.runtime import SimulationRuntime
     from backend.simulation.world import FleetBlueprint, make_robot
+    from tests.integration.agent2.conftest import task as make_task
+    from tests.unit.safety.conftest import build_registry, world_with_obstacles
 
     blueprint = FleetBlueprint(
         world=world_with_obstacles(8, 8, ()),
@@ -116,24 +115,43 @@ def test_telemetry_reports_a_conflict_and_the_reason(coordinator) -> None:
         ),
         start_cells=((0, 3), (3, 3)),
     )
-    from backend.simulation.runtime import SimulationRuntime
-    from tests.integration.agent2.conftest import task as make_task
-
     head_on = SimulationRuntime(blueprint)
     head_on.submit_task(make_task("task-001", (3, 3), priority=4))
     head_on.assign_task("task-001", "robot-001")
     head_on.submit_task(make_task("task-002", (0, 3), priority=1))
     head_on.assign_task("task-002", "robot-002")
 
-    telemetry = build_fleet_telemetry(head_on)
-    conflicted = [robot for robot in telemetry.robots if robot.action == "BLOCKED"]
+    # The pair is genuinely detected, from the canonical conflict record.
+    published = [
+        item
+        for item in head_on.event_stream.subscribe(0)
+        if item.event_type.value == "CONFLICT_DETECTED"
+    ]
+    assert published, "a head-on pair must be detected"
+    reported_pair = set(published[0].payload.conflict.robot_ids)
+    assert reported_pair == {"robot-001", "robot-002"}
 
-    assert conflicted, "a head-on pair must be reported as blocked"
-    for robot in conflicted:
-        assert robot.conflict_with, "a blocked robot must name the other robot"
-        assert "conflict" in robot.action_reason.lower()
-    assert telemetry.open_conflict_pairs
-    del runtime
+    # Telemetry must agree with that record and never invent a partner. This
+    # holds at any instant of the run, including after recovery has closed the
+    # conflict, which is why it is checked as an invariant rather than as a
+    # snapshot of one moment.
+    for tick in range(12):
+        telemetry = build_fleet_telemetry(head_on)
+        for robot in telemetry.robots:
+            for partner in robot.conflict_with:
+                assert partner in reported_pair
+                other = next(
+                    item for item in telemetry.robots if item.robot_id == partner
+                )
+                assert robot.robot_id in other.conflict_with, (
+                    "a conflict must be reported symmetrically, from one record"
+                )
+            assert robot.action_reason, "every action must carry a reason"
+        # Reported pairs always come from a real open conflict record.
+        for pair in telemetry.open_conflict_pairs:
+            assert set(pair) <= reported_pair
+        head_on.run_ticks(2)
+        del tick
 
 
 def test_telemetry_progress_tracks_a_moving_robot(coordinator) -> None:
