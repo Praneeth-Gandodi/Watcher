@@ -50,7 +50,7 @@ USER watcher
 EXPOSE 8000
 
 # Reads $PORT so the check is correct on hosts that assign a different one.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries 3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT:-8000}/api/v1/health" || exit 1
 
 # One worker on purpose. The runtime is a single authoritative in-process world;
