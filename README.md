@@ -164,7 +164,9 @@ docker build -t watcher .
 docker run --rm -p 8000:8000 -e WATCHER_FLEET_SIZE=500 watcher
 ```
 
-Full instructions, configuration, and per-host notes are in
+There is nothing host-specific: any host that builds the `Dockerfile` and
+forwards one port can run it. Start with
+[DEPLOY.md](DEPLOY.md); per-host detail and sizing tables are in
 [docs/deployment.md](docs/deployment.md).
 
 <!-- TODO: paste the deployment URL here once deployed -->

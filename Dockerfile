@@ -53,10 +53,15 @@ USER watcher
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries 3 \
-    CMD curl -fsS http://127.0.0.1:8000/api/v1/health || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PORT:-8000}/api/v1/health" || exit 1
 
 # One worker on purpose. The simulation runtime is a single authoritative
 # in-process world behind a lock; running several workers would give each one its
 # own world and the jury would see a different fleet per request. Scale by
 # raising WATCHER_FLEET_SIZE, not by adding workers.
-CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+#
+# The port comes from $PORT with a local fallback. Hosts that inject PORT
+# (Render, Railway, Heroku, Cloud Run, Fly.io) route traffic to whatever it
+# holds, and an exec-form CMD cannot expand it. The inner exec keeps uvicorn as
+# PID 1 so it takes SIGTERM directly and shuts down cleanly on redeploy.
+CMD ["/bin/sh", "-c", "exec uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
