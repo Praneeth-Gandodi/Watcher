@@ -65,6 +65,12 @@ export interface SimulationState {
   start: () => Promise<void>;
   /** Resume, or reopen the scenario when there is no work left. */
   startOrReopen: () => Promise<void>;
+  /**
+   * Pull the read models now, without touching the clock. The demo runner uses
+   * it so a held stage shows the state the backend just reported instead of
+   * whatever the last poll happened to catch.
+   */
+  refreshNow: () => Promise<void>;
   pause: () => Promise<void>;
   step: () => Promise<void>;
   setSpeed: (multiplier: number) => Promise<void>;
@@ -398,8 +404,25 @@ export function useSimulation(): SimulationState {
   );
 
 
-  const startOrReopen = useCallback(async () => {
-    const openTasks =
+  /**
+   * Read the current state without advancing anything.
+   *
+   * The demo runner needs this between stages: a stage ends by pausing, and
+   * the panels must show the state the pause actually produced rather than the
+   * last thing a background poll happened to see.
+   */
+  const refreshNow = useCallback(async () => {
+    try {
+      await refresh();
+      await pollEvents();
+      setConnection("online");
+    } catch (cause) {
+      setConnection("offline");
+      report(cause);
+    }
+  }, [refresh, pollEvents, report]);
+
+  const startOrReopen = useCallback(async () => {    const openTasks =
       snapshotRef.current?.tasks.filter(
         (task) => task.status !== "completed" && task.status !== "cancelled",
       ).length ?? 0;
@@ -477,6 +500,7 @@ export function useSimulation(): SimulationState {
       now,
       start,
       startOrReopen,
+      refreshNow,
       pause,
       step,
       setSpeed,
@@ -507,6 +531,7 @@ export function useSimulation(): SimulationState {
       now,
       start,
       startOrReopen,
+      refreshNow,
       pause,
       step,
       setSpeed,

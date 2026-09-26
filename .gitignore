@@ -15,8 +15,8 @@ htmlcov/
 
 # Node / React
 node_modules/
-dashboard/dist/
-dashboard/coverage/
+dist/
+coverage/
 *.tsbuildinfo
 .vite/
 

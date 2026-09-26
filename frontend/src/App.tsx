@@ -24,6 +24,8 @@ import { StatusBar } from "./components/StatusBar";
 import { TaskPanel } from "./components/TaskPanel";
 import { TemplatesPanel } from "./components/TemplatesPanel";
 import { useSimulation } from "./state/useSimulation";
+import { useDemo } from "./state/useDemo";
+import { useTheme } from "./state/useTheme";
 
 interface DisplayState {
   showFootprints: boolean;
@@ -47,6 +49,8 @@ type BottomTab = "events" | "negotiation" | "tasks" | "templates" | "scenario";
 
 export function App() {
   const sim = useSimulation();
+  const demo = useDemo();
+  const theme = useTheme();
   const [selectedRobotId, setSelectedRobotId] = useState<string | null>(null);
   const [display, setDisplay] = useState<DisplayState>(DEFAULT_DISPLAY);
   const [placingTask, setPlacingTask] = useState(false);
@@ -92,6 +96,26 @@ export function App() {
           </div>
         </div>
         <div className="masthead-meta">
+          <div className="theme-switch" role="group" aria-label="Colour theme">
+            {theme.themes.map((candidate) => (
+              <button
+                key={candidate.id}
+                type="button"
+                title={candidate.note}
+                className={
+                  candidate.id === theme.id ? "theme-chip theme-chip--on" : "theme-chip"
+                }
+                onClick={() => theme.select(candidate.id)}
+              >
+                <span
+                  className="theme-swatch"
+                  style={{ background: candidate.palette.safe }}
+                  aria-hidden="true"
+                />
+                {candidate.label}
+              </button>
+            ))}
+          </div>
           <span>BACKEND {sim.health?.version ?? "--"}</span>
           <span>SCENARIO {sim.telemetry?.scenario ?? "--"}</span>
           <span>UNITS {sim.snapshot?.robots.length ?? 0}</span>
@@ -236,7 +260,23 @@ export function App() {
               scenarios={sim.scenarios}
               active={sim.telemetry?.scenario ?? "normal"}
               busy={sim.busy !== null}
+              demo={demo}
               onLoad={(name) => void sim.loadScenario({ name })}
+              onStartDemo={(name, stages) => {
+                setSelectedRobotId(null);
+                void demo.start(name, stages, {
+                  pause: async () => {
+                    // The console's own transport, so the poll loop stops
+                    // advancing ticks too. Pausing the backend alone left the
+                    // run moving between stages.
+                    if (sim.running) await sim.pause();
+                  },
+                  resume: async () => {
+                    if (!sim.running) await sim.start();
+                  },
+                  refresh: sim.refreshNow,
+                });
+              }}
             />
           ) : null}
           {tab === "scenario" ? (

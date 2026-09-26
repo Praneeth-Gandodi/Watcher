@@ -6,11 +6,14 @@
  * yellow is waiting, red is a conflict or a failure, and the accent marks the
  * current selection.
  *
- * The map is the only flexible region. Everything else is a fixed grid so the
- * layout stays readable from 1280px up without a layout framework.
+ * Every colour here is a custom property written by `applyTheme` from the same
+ * palette object the canvas draws with, so the DOM and the map can never drift
+ * apart. The values below are the industrial default and are only a fallback for
+ * the first paint before the theme is applied.
  */
 
-:root {
+:root,
+:root[data-theme="industrial"] {
   --background: #0b0f0e;
   --panel: #111817;
   --panel-raised: #18201e;
@@ -27,13 +30,28 @@
   --failure: #ff3b30;
   --selected: #c6ff4a;
   --resource: #b58cff;
+  --charging: #54c7ff;
+  --workstation: #ffd166;
+  --route-active: #54c7ff;
+  --route-done: #2c4a42;
+  --trail: #7cff6b;
+}
 
-  --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
-  --radius: 2px;
+:root[data-theme="amber"] {
+  color-scheme: dark;
+}
+
+:root[data-theme="ice"] {
+  color-scheme: dark;
 }
 
 * {
   box-sizing: border-box;
+}
+
+:root {
+  --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
+  --radius: 2px;
 }
 
 html,
@@ -157,6 +175,47 @@ body::after {
 .masthead-meta span::before {
   content: "// ";
   color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------ theme switch */
+
+.theme-switch {
+  display: flex;
+  gap: 1px;
+  margin-right: 6px;
+}
+
+.theme-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: var(--panel-sunken);
+  border: 1px solid var(--grid);
+  border-radius: var(--radius);
+  padding: 3px 7px;
+  cursor: pointer;
+}
+
+.theme-chip:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.theme-chip--on {
+  color: var(--selected);
+  border-color: var(--selected);
+  background: var(--panel-raised);
+}
+
+.theme-swatch {
+  width: 7px;
+  height: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.4);
 }
 
 /* ------------------------------------------------------------- status bar */
@@ -1324,7 +1383,150 @@ body::after {
   margin: 0;
 }
 
-/* --------------------------------------------------------------- templates */
+/* ----------------------------------------------------------------- demo bar */
+
+.demo-bar {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  background: var(--panel-raised);
+  border: 1px solid var(--selected);
+  box-shadow: inset 0 0 0 1px rgba(198, 255, 74, 0.18);
+}
+
+.demo-bar-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.demo-bar-stage {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--selected);
+}
+
+.demo-bar-count {
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: var(--text-faint);
+}
+
+.demo-bar-status {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  border: 1px solid var(--grid-major);
+  color: var(--text-dim);
+}
+
+.demo-bar-status--held {
+  color: var(--warning);
+  border-color: rgba(255, 209, 102, 0.55);
+  background: rgba(255, 209, 102, 0.1);
+}
+
+.demo-bar-status--running {
+  color: var(--info);
+  border-color: rgba(84, 199, 255, 0.5);
+}
+
+.demo-bar-status--error {
+  color: var(--failure);
+  border-color: rgba(255, 59, 48, 0.55);
+}
+
+.demo-caption {
+  margin: 8px 0 0;
+  max-width: 100ch;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.demo-watch {
+  margin: 6px 0 0;
+  max-width: 100ch;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.demo-watch span {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 5px;
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  color: var(--info);
+  border: 1px solid rgba(84, 199, 255, 0.45);
+}
+
+.demo-error {
+  margin: 6px 0 0;
+  font-size: 10px;
+  color: var(--failure);
+}
+
+.demo-controls {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.demo-track {
+  display: flex;
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.demo-tick {
+  flex: 1;
+  height: 3px;
+  background: var(--grid);
+}
+
+.demo-tick--done {
+  background: var(--text-faint);
+}
+
+.demo-tick--on {
+  background: var(--selected);
+}
+
+/* --------------------------------------------------------- template stages */
+
+.template-stages {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: stage;
+}
+
+.template-stage {
+  display: grid;
+  gap: 1px;
+  padding: 5px 7px;
+  background: var(--panel);
+  border-left: 2px solid var(--grid-major);
+}
+
+.template-stage-title {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--text);
+}
+
+.template-stage-caption {
+  font-size: 9px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
 
 .templates {
   display: block;

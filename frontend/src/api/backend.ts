@@ -14,6 +14,7 @@ import type {
   ScenarioLoadedResponse,
   SnapshotResponse,
   SystemMetrics,
+  Task,
   TelemetryResponse,
   WorldState,
 } from "./types";
@@ -98,6 +99,11 @@ export function getTelemetry(): Promise<TelemetryResponse> {
 
 export function getScenarios(): Promise<ScenarioListResponse> {
   return request<ScenarioListResponse>("/scenarios");
+}
+
+/** Every registered task, in canonical `task_id` order. */
+export function getTasks(): Promise<Task[]> {
+  return request<Task[]>("/tasks");
 }
 
 export function getEvents(afterSequence: number): Promise<BackendEvent[]> {
@@ -200,6 +206,23 @@ export function createTask(body: NewTaskBody): Promise<CommandResponse> {
         created_at_s: 0,
       },
     }),
+  });
+}
+
+/**
+ * Drop a working robot's charge below the low threshold.
+ *
+ * The backend observes the new level on its next movement tick and publishes the
+ * ordinary `BATTERY_LOW` event, which is the trigger the coordinator already
+ * handles for migrating a task. Nothing about the reassignment is faked here.
+ */
+export function drainBattery(
+  robotId: string,
+  percent = 8,
+): Promise<CommandResponse> {
+  return request<CommandResponse>("/faults/battery-drain", {
+    method: "POST",
+    body: JSON.stringify({ robot_id: robotId, percent }),
   });
 }
 

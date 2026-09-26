@@ -31,7 +31,7 @@ import {
   drawWorld,
   type GridGeometry,
 } from "./grid";
-import { drawDestination, drawRobotRoute, drawTravelledRoute } from "./routes";
+import { drawDestination, drawRobotRoute } from "./routes";
 import { sampleAnchor, type AnchorSample } from "./interpolation";
 import type { PickableRobot } from "./hitTest";
 import { rectFor } from "./hitTest";
@@ -128,16 +128,51 @@ export function drawScene(
 
   drawFloor(ctx, geometry, viewport.width, viewport.height);
   drawWorld(ctx, world, geometry, time);
-  if (input.showConflictCells) drawConflictOverlay(ctx, input, geometry, time);
-  if (input.showTrails) drawTrailOverlay(ctx, input, geometry);
-  if (input.showRoutes) drawRouteOverlay(ctx, input, geometry);
+  // Positions are resolved before anything is drawn, so the body, its path, and
+  // its trail all share a single origin. Resolving them separately is what made
+  // a line detach from its robot whenever the backend held or moved it.
+  const anchors = resolveAnchors(input);
+  if (input.showConflictCells) drawConflictOverlay(ctx, input, geometry, time, anchors);
+  if (input.showTrails) drawTrailOverlay(ctx, input, geometry, anchors);
+  if (input.showRoutes) drawRouteOverlay(ctx, input, geometry, anchors);
   drawDestinationOverlay(ctx, input, geometry);
   if (input.showTaskMarkers) drawTasks(ctx, geometry, snapshot.tasks, time);
 
-  const pickable = drawRobots(ctx, input, geometry, viewport, time);
+  const pickable = drawRobots(ctx, input, geometry, viewport, time, anchors);
   drawWorldHud(ctx, geometry, snapshot);
 
   return { pickable, drawnRobots: pickable.length };
+}
+
+/**
+ * Resolve every robot's drawn position once, up front.
+ *
+ * The body, its path, and its hit rectangle must all use the same corner. When
+ * they were resolved separately the path was drawn from the robot's committed
+ * cell while the body was drawn at its smoothed position, so on a hold or a
+ * retreat the line visibly detached from the machine and the route looked
+ * broken. Resolving once and sharing the result is what keeps them together.
+ */
+function resolveAnchors(
+  input: SceneInput,
+): Map<string, { anchor: SmoothedAnchor; travelling: boolean; sample: AnchorSample }> {
+  const nowS = input.telemetry?.simulation_time_s ?? 0;
+  const resolved = new Map<
+    string,
+    { anchor: SmoothedAnchor; travelling: boolean; sample: AnchorSample }
+  >();
+  for (const robot of input.telemetry?.robots ?? []) {
+    const travelling = isTravelling(robot);
+    // A held robot is never projected forward: it is exactly where the backend
+    // put it, so the path drawn for it starts there too.
+    const sample = sampleAnchor(robot, nowS, travelling ? input.deltaS : 0);
+    resolved.set(robot.robot_id, {
+      anchor: easeToward(input, robot.robot_id, sample, travelling),
+      travelling,
+      sample,
+    });
+  }
+  return resolved;
 }
 
 function drawConflictOverlay(
@@ -145,6 +180,7 @@ function drawConflictOverlay(
   input: SceneInput,
   geometry: GridGeometry,
   time: number,
+  anchors: ReturnType<typeof resolveAnchors>,
 ): void {
   const robots = input.telemetry?.robots ?? [];
   const byId = new Map(robots.map((robot) => [robot.robot_id, robot]));
@@ -157,24 +193,47 @@ function drawConflictOverlay(
       const key = [robot.robot_id, otherId].sort().join("|");
       if (seen.has(key)) continue;
       seen.add(key);
-      cells.push({ cellX: robot.cell_x, cellY: robot.cell_y });
-      cells.push({ cellX: other.cell_x, cellY: other.cell_y });
+      // Hatch the cell each machine is actually standing in, so the highlight
+      // sits under the body the user is looking at.
+      cells.push({ cellX: drawnCell(anchors, robot.robot_id, robot), cellY: drawnRow(anchors, robot.robot_id, robot) });
+      cells.push({ cellX: drawnCell(anchors, otherId, other), cellY: drawnRow(anchors, otherId, other) });
     }
   }
   drawConflictCells(ctx, geometry, cells, time);
+}
+
+function drawnCell(
+  anchors: ReturnType<typeof resolveAnchors>,
+  robotId: string,
+  robot: RobotTelemetry,
+): number {
+  return anchors.has(robotId) ? Math.floor(anchors.get(robotId)!.anchor.left) : robot.cell_x;
+}
+
+function drawnRow(
+  anchors: ReturnType<typeof resolveAnchors>,
+  robotId: string,
+  robot: RobotTelemetry,
+): number {
+  return anchors.has(robotId) ? Math.floor(anchors.get(robotId)!.anchor.top) : robot.cell_y;
 }
 
 function drawTrailOverlay(
   ctx: CanvasRenderingContext2D,
   input: SceneInput,
   geometry: GridGeometry,
+  anchors: ReturnType<typeof resolveAnchors>,
 ): void {
   for (const robot of input.telemetry?.robots ?? []) {
     if (robot.trail.length < 1) continue;
     if (robot.status === "failed" || robot.status === "offline") continue;
+    const resolved = anchors.get(robot.robot_id);
+    if (!resolved) continue;
+    // Start at the drawn body, not at the raw reported position, so the
+    // dashed line and the machine it belongs to never disagree.
     const head = {
-      x: geometry.originX + robot.position_x * geometry.cellPixels,
-      y: geometry.originY + robot.position_y * geometry.cellPixels,
+      x: geometry.originX + (resolved.anchor.left + 0.5) * geometry.cellPixels,
+      y: geometry.originY + (resolved.anchor.top + 0.5) * geometry.cellPixels,
     };
     ctx.save();
     ctx.globalAlpha = 0.32;
@@ -184,6 +243,8 @@ function drawTrailOverlay(
     ctx.beginPath();
     ctx.moveTo(head.x, head.y);
     for (const [x, y] of robot.trail) {
+      // Trail entries are anchor-cell centres in metres, which is exactly the
+      // centre of the cell in pixels.
       ctx.lineTo(
         geometry.originX + x * geometry.cellPixels,
         geometry.originY + y * geometry.cellPixels,
@@ -198,23 +259,22 @@ function drawRouteOverlay(
   ctx: CanvasRenderingContext2D,
   input: SceneInput,
   geometry: GridGeometry,
+  anchors: ReturnType<typeof resolveAnchors>,
 ): void {
   const snapshot = input.snapshot;
   if (!snapshot) return;
+  // The planned `RoutePlan` is no longer drawn. The committed trail is the
+  // single source for a robot's path: the route a replan leaves behind is what
+  // made the drawn line disagree with the body it belonged to.
   const routesById = new Map<string, RoutePlan>(
     snapshot.routes.map((route) => [route.route_id, route]),
   );
   for (const robot of input.telemetry?.robots ?? []) {
-    if (robot.route_id && robot.trail.length === 0) {
-      drawTravelledRoute(
-        ctx,
-        geometry,
-        routesById.get(robot.route_id),
-        robot.cells_travelled,
-      );
-    }
-    drawRobotRoute(ctx, geometry, robot);
+    const resolved = anchors.get(robot.robot_id);
+    if (!resolved) continue;
+    drawRobotRoute(ctx, geometry, robot, resolved.anchor);
   }
+  void routesById;
 }
 
 function drawDestinationOverlay(
@@ -306,32 +366,28 @@ function drawRobots(
   geometry: GridGeometry,
   viewport: Viewport,
   time: number,
-): PickableRobot[] {  const robots = input.telemetry?.robots ?? [];
-  const nowS = input.telemetry?.simulation_time_s ?? 0;
+  anchors: ReturnType<typeof resolveAnchors>,
+): PickableRobot[] {
+  const robots = input.telemetry?.robots ?? [];
   const bounds = visibleBounds(input.camera, viewport);
   const pickable: PickableRobot[] = [];
 
   robots.forEach((robot, index) => {
-    const travelling = isTravelling(robot);
-    // A robot the backend is holding stays exactly where it committed to. Only
-    // a travelling one is projected forward along its published trail, which is
-    // what stops a yielded robot from being drawn straight through the robot it
-    // yielded to.
-    const projectedS = travelling ? input.deltaS : 0;
-    const sample = sampleAnchor(robot, nowS, projectedS);
-    const anchor = easeToward(input, robot.robot_id, sample, travelling);
+    const resolved = anchors.get(robot.robot_id);
+    if (!resolved) return;
+    const { anchor, sample, travelling } = resolved;
     const anchorX = geometry.originX + anchor.left * geometry.cellPixels;
     const anchorY = geometry.originY + anchor.top * geometry.cellPixels;
     const width = robot.width_cells * geometry.cellPixels;
     const height = robot.height_cells * geometry.cellPixels;
 
-    // Cull anything fully outside the viewport before touching the canvas.
+    // Cull against the drawn position, so a body never pops in at the edge.
     const slack = 2;
     if (
-      sample.left + robot.width_cells < bounds.minX - slack ||
-      sample.left > bounds.maxX + slack ||
-      sample.top + robot.height_cells < bounds.minY - slack ||
-      sample.top > bounds.maxY + slack
+      anchor.left + robot.width_cells < bounds.minX - slack ||
+      anchor.left > bounds.maxX + slack ||
+      anchor.top + robot.height_cells < bounds.minY - slack ||
+      anchor.top > bounds.maxY + slack
     ) {
       return;
     }
@@ -341,7 +397,7 @@ function drawRobots(
     const visual = visualFor(
       robot,
       sample,
-      robot.action === "MOVING" || robot.action === "REPLANNING",
+      travelling,
       selected,
     );
     drawRobot(ctx, rect, { ...visual, time });
